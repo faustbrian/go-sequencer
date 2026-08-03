@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Delegate local mutation checks to the canonical exact-100 repository runner
+  instead of a reduced package-local efficacy threshold.
+
 ### Fixed
 
 - Reject administrative inspect versions that exceed the platform `uint`

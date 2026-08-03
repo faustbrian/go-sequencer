@@ -4,7 +4,6 @@ BENCH_TIME ?= 100ms
 GOLANGCI_LINT_VERSION ?= v2.12.2
 STATICCHECK_VERSION ?= v0.8.0-rc.1
 GOVULNCHECK_VERSION ?= v1.6.0
-GREMLINS_VERSION ?= v0.6.0
 ACTIONLINT_VERSION ?= v1.7.12
 
 .PHONY: benchmark check coverage docs format format-check fuzz integration \

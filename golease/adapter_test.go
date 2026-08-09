@@ -36,18 +36,26 @@ func TestAdapterValidationAndFailurePaths(t *testing.T) {
 	if _, err := golease.New(nil); !errors.Is(err, golease.ErrInvalidAdapter) {
 		t.Fatalf("New(nil) error = %v", err)
 	}
-	adapter, _ := golease.New(acquirerStub{})
+	adapter, _ := golease.New(acquirerStub{handle: &handleStub{owner: "owner", fencing: 1}})
 	if err := adapter.WithClaim(context.Background(), "", time.Second, func(context.Context, golease.Ownership) error { return nil }); !errors.Is(err, golease.ErrInvalidAdapter) {
 		t.Fatalf("invalid input error = %v", err)
+	}
+	if err := adapter.WithClaim(context.Background(), "key", 0, func(context.Context, golease.Ownership) error { return nil }); !errors.Is(err, golease.ErrInvalidAdapter) {
+		t.Fatalf("zero TTL error = %v", err)
+	}
+	if err := adapter.WithClaim(context.Background(), "key", time.Second, nil); !errors.Is(err, golease.ErrInvalidAdapter) {
+		t.Fatalf("nil execute error = %v", err)
 	}
 	cause := errors.New("unavailable")
 	adapter, _ = golease.New(acquirerStub{err: cause})
 	if err := adapter.WithClaim(context.Background(), "key", time.Second, func(context.Context, golease.Ownership) error { return nil }); !errors.Is(err, cause) {
 		t.Fatalf("acquire error = %v", err)
 	}
-	adapter, _ = golease.New(acquirerStub{handle: &handleStub{}})
-	if err := adapter.WithClaim(context.Background(), "key", time.Second, func(context.Context, golease.Ownership) error { return nil }); !errors.Is(err, golease.ErrInvalidAdapter) {
-		t.Fatalf("invalid handle error = %v", err)
+	for _, handle := range []golease.Handle{nil, &handleStub{fencing: 1}, &handleStub{owner: "owner"}} {
+		adapter, _ = golease.New(acquirerStub{handle: handle})
+		if err := adapter.WithClaim(context.Background(), "key", time.Second, func(context.Context, golease.Ownership) error { return nil }); !errors.Is(err, golease.ErrInvalidAdapter) {
+			t.Fatalf("invalid handle %+v error = %v", handle, err)
+		}
 	}
 	execution, release := errors.New("execution"), errors.New("release")
 	adapter, _ = golease.New(acquirerStub{handle: &handleStub{owner: "owner", fencing: 1, releaseErr: release}})
@@ -58,7 +66,7 @@ func TestAdapterValidationAndFailurePaths(t *testing.T) {
 }
 
 type acquirerStub struct {
-	handle *handleStub
+	handle golease.Handle
 	err    error
 }
 

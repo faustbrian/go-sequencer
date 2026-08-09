@@ -43,3 +43,26 @@ func BenchmarkMemoryClaimBacklog(benchmark *testing.B) {
 		}
 	}
 }
+
+func BenchmarkMemoryFencedRenewal(benchmark *testing.B) {
+	ctx := context.Background()
+	store := memory.New()
+	now := time.Now()
+	registration := sequencer.Registration{ID: "renew", Version: 1, Checksum: "sha256:renew"}
+	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
+		benchmark.Fatal(err)
+	}
+	claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum}},
+		Owner:      "benchmark", Now: now, LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		benchmark.Fatal(err)
+	}
+	benchmark.ReportAllocs()
+	for benchmark.Loop() {
+		if _, err := store.RenewLease(ctx, claim.Ownership(), now.Add(time.Second), time.Minute); err != nil {
+			benchmark.Fatal(err)
+		}
+	}
+}

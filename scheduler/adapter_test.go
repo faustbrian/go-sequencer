@@ -33,8 +33,14 @@ func TestAdapterRejectsInvalidDependenciesAndRequests(t *testing.T) {
 		t.Fatalf("New(nil) error = %v", err)
 	}
 	adapter, _ := scheduler.New(&schedulerStub{})
-	if err := adapter.Defer(context.Background(), "", 0, time.Time{}); !errors.Is(err, scheduler.ErrInvalidAdapter) {
-		t.Fatalf("Defer(invalid) error = %v", err)
+	for _, request := range []scheduler.Request{
+		{Version: 1, EligibleAt: time.Now()},
+		{OperationID: "a", EligibleAt: time.Now()},
+		{OperationID: "a", Version: 1},
+	} {
+		if err := adapter.Defer(context.Background(), request.OperationID, request.Version, request.EligibleAt); !errors.Is(err, scheduler.ErrInvalidAdapter) {
+			t.Fatalf("Defer(%+v) error = %v", request, err)
+		}
 	}
 	cause := errors.New("schedule")
 	adapter, _ = scheduler.New(&schedulerStub{err: cause})

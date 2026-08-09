@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 
 	sequencer "github.com/faustbrian/golib/pkg/sequencer"
@@ -77,12 +78,26 @@ WHERE operation_id = $1 AND version = $2`, registration.ID, registration.Version
 
 // ClaimNext transactionally claims the first dependency-ready plan candidate.
 func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
-	if request.Owner == "" || request.LeaseDuration <= 0 || len(request.OperationIDs) == 0 {
+	if request.Owner == "" || request.LeaseDuration <= 0 || (len(request.Candidates) == 0 && len(request.OperationIDs) == 0) {
 		return sequencer.Claim{}, sequencer.ErrInvalidOperation
 	}
-	ids := make([]string, len(request.OperationIDs))
-	for index, id := range request.OperationIDs {
-		ids[index] = string(id)
+	candidates := request.Candidates
+	if len(candidates) == 0 {
+		candidates = make([]sequencer.ClaimCandidate, len(request.OperationIDs))
+		for index, id := range request.OperationIDs {
+			candidates[index] = sequencer.ClaimCandidate{ID: id}
+		}
+	}
+	ids := make([]string, len(candidates))
+	versions := make([]int64, len(candidates))
+	checksums := make([]string, len(candidates))
+	for index, candidate := range candidates {
+		ids[index] = string(candidate.ID)
+		var err error
+		if versions[index], err = toInt64(candidate.Version); err != nil {
+			return sequencer.Claim{}, err
+		}
+		checksums[index] = candidate.Checksum
 	}
 	tx, err := store.database.Begin(ctx)
 	if err != nil {
@@ -94,11 +109,14 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 	err = tx.QueryRow(ctx, `
 WITH candidate AS (
     SELECT operation.operation_id, operation.version
-    FROM unnest($1::text[]) WITH ORDINALITY requested(operation_id, ordinal)
+    FROM unnest($1::text[], $2::bigint[], $3::text[])
+         WITH ORDINALITY requested(operation_id, version, checksum, ordinal)
     JOIN LATERAL (
         SELECT * FROM sequencer_operations
         WHERE operation_id = requested.operation_id
-        ORDER BY version DESC LIMIT 1
+          AND (requested.version = 0 OR sequencer_operations.version = requested.version)
+          AND (requested.checksum = '' OR sequencer_operations.checksum = requested.checksum)
+        ORDER BY sequencer_operations.version DESC LIMIT 1
     ) operation ON true
     WHERE operation.state IN ('eligible', 'retryable', 'deferred')
       AND operation.eligible_at <= clock_timestamp()
@@ -118,10 +136,10 @@ WITH candidate AS (
     LIMIT 1
 ), claimed AS (
     UPDATE sequencer_operations operation SET
-        state = 'claimed', owner = $2,
+        state = 'claimed', owner = $4,
         fencing_token = operation.fencing_token + 1,
         attempt_number = operation.attempt_number + 1,
-        lease_expires_at = clock_timestamp() + ($3 * interval '1 millisecond'),
+        lease_expires_at = clock_timestamp() + ($5 * interval '1 millisecond'),
         updated_at = clock_timestamp()
     FROM candidate
     WHERE operation.operation_id = candidate.operation_id
@@ -130,7 +148,7 @@ WITH candidate AS (
               operation.attempt_number, operation.fencing_token,
               operation.updated_at, operation.lease_expires_at
 )
-SELECT * FROM claimed`, ids, request.Owner, request.LeaseDuration.Milliseconds()).Scan(
+SELECT * FROM claimed`, ids, versions, checksums, request.Owner, request.LeaseDuration.Milliseconds()).Scan(
 		&claim.Attempt.OperationID, &version, &number, &fencing,
 		&claim.Attempt.StartedAt, &claim.Until,
 	)
@@ -224,6 +242,28 @@ WHERE operation_id = $1 AND version = $2 AND attempt_number = $3`,
 	return record, nil
 }
 
+// RenewLease extends a claimed or running attempt under its current fencing proof.
+// PostgreSQL time is authoritative so pod clock skew cannot shorten ownership.
+func (store *Store) RenewLease(ctx context.Context, ownership sequencer.Ownership, _ time.Time, duration time.Duration) (time.Time, error) {
+	if duration.Milliseconds() <= 0 {
+		return time.Time{}, sequencer.ErrInvalidLease
+	}
+	var until time.Time
+	err := store.database.QueryRow(ctx, `
+UPDATE sequencer_operations SET
+    lease_expires_at = clock_timestamp() + ($5 * interval '1 millisecond'),
+    updated_at = clock_timestamp()
+WHERE operation_id = $1 AND version = $2 AND owner = $3
+  AND fencing_token = $4 AND state IN ('claimed', 'running')
+  AND lease_expires_at > clock_timestamp()
+RETURNING lease_expires_at`, ownership.OperationID, ownership.Version,
+		ownership.Owner, ownership.Fencing, duration.Milliseconds()).Scan(&until)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, sequencer.ErrStaleOwner
+	}
+	return until, err
+}
+
 // Complete atomically persists the attempt outcome and current projection.
 func (store *Store) Complete(ctx context.Context, completion sequencer.Completion) error {
 	if err := sequencer.ValidateTransition(sequencer.Running, completion.State); err != nil {
@@ -288,7 +328,7 @@ func (store *Store) RecoverExpired(ctx context.Context, _ time.Time) (int, error
 	var count int
 	err := store.database.QueryRow(ctx, `
 WITH candidates AS MATERIALIZED (
-    SELECT operation_id, version, attempt_number, fencing_token, state
+    SELECT operation_id, version, attempt_number, owner, fencing_token, state
     FROM sequencer_operations
     WHERE state IN ('claimed', 'running')
       AND lease_expires_at <= clock_timestamp()
@@ -301,7 +341,8 @@ WITH candidates AS MATERIALIZED (
     WHERE operation.operation_id = candidates.operation_id
       AND operation.version = candidates.version
     RETURNING operation.operation_id, operation.version,
-              operation.attempt_number, operation.fencing_token,
+              operation.attempt_number, candidates.owner,
+              operation.fencing_token,
               operation.updated_at, candidates.state AS from_state
 ), attempts AS (
     UPDATE sequencer_attempts attempt SET
@@ -312,22 +353,24 @@ WITH candidates AS MATERIALIZED (
       AND attempt.version = expired.version
       AND attempt.attempt_number = expired.attempt_number
     RETURNING expired.operation_id, expired.version, expired.attempt_number,
-              expired.fencing_token, expired.updated_at, expired.from_state
+              expired.owner, expired.fencing_token, expired.updated_at,
+              expired.from_state
 ), retry_events AS (
     INSERT INTO sequencer_audit_events (
         operation_id, version, attempt_number, from_state, to_state,
-        occurred_at, fencing_token, actor, reason
+        occurred_at, owner, fencing_token, actor, reason
     ) SELECT operation_id, version, attempt_number, from_state, 'retryable',
-             updated_at, fencing_token, 'system',
+             updated_at, owner, fencing_token, 'system',
              'lease expired; outcome unknown'
       FROM attempts
-    RETURNING operation_id, version, attempt_number, occurred_at, fencing_token
+    RETURNING operation_id, version, attempt_number, occurred_at, owner,
+              fencing_token
 ), eligible_events AS (
     INSERT INTO sequencer_audit_events (
         operation_id, version, attempt_number, from_state, to_state,
-        occurred_at, fencing_token, actor, reason
+        occurred_at, owner, fencing_token, actor, reason
     ) SELECT operation_id, version, attempt_number, 'retryable', 'eligible',
-             occurred_at, fencing_token, 'system', 'recovered'
+             occurred_at, owner, fencing_token, 'system', 'recovered'
       FROM retry_events
     RETURNING operation_id
 )
@@ -553,10 +596,11 @@ func firstNonEmpty(values ...string) string {
 }
 
 func toUint(value int64) (uint, error) {
-	if value < 0 || uint64(value) > uint64(^uint(0)) {
+	parsed, err := strconv.ParseUint(strconv.FormatInt(value, 10), 10, strconv.IntSize)
+	if err != nil {
 		return 0, fmt.Errorf("%w: %d", errInvalidLedgerInteger, value)
 	}
-	return uint(value), nil
+	return uint(parsed), nil //nolint:gosec // ParseUint limits parsed to the platform uint width.
 }
 
 func toUint64(value int64) (uint64, error) {
@@ -574,3 +618,4 @@ func toInt64(value uint) (int64, error) {
 }
 
 var _ sequencer.Store = (*Store)(nil)
+var _ sequencer.LeaseStore = (*Store)(nil)

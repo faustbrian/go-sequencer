@@ -90,10 +90,15 @@ func (handler *Handler) execute(response http.ResponseWriter, request *http.Requ
 
 func (handler *Handler) inspect(response http.ResponseWriter, request *http.Request) {
 	id := strings.TrimPrefix(request.URL.Path, "/operations/")
-	if id == "" || strings.Contains(id, "/") || !handler.authorized(response, request, ActionInspect, id) {
-		if id == "" || strings.Contains(id, "/") {
-			http.NotFound(response, request)
-		}
+	if id == "" {
+		http.NotFound(response, request)
+		return
+	}
+	if strings.Contains(id, "/") {
+		http.NotFound(response, request)
+		return
+	}
+	if !handler.authorized(response, request, ActionInspect, id) {
 		return
 	}
 	version, err := strconv.ParseUint(
@@ -111,17 +116,22 @@ func (handler *Handler) inspect(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	response.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(response).Encode(result); err != nil {
-		return
-	}
+	// Headers are already committed once encoding starts, so a write failure
+	// cannot be converted into a second HTTP response.
+	_ = json.NewEncoder(response).Encode(result)
 }
 
 func (handler *Handler) reset(response http.ResponseWriter, request *http.Request) {
 	id := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/operations/"), "/reset")
-	if id == "" || strings.Contains(id, "/") || !handler.authorized(response, request, ActionReset, id) {
-		if id == "" || strings.Contains(id, "/") {
-			http.NotFound(response, request)
-		}
+	if id == "" {
+		http.NotFound(response, request)
+		return
+	}
+	if strings.Contains(id, "/") {
+		http.NotFound(response, request)
+		return
+	}
+	if !handler.authorized(response, request, ActionReset, id) {
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBytes)

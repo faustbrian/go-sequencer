@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	"github.com/faustbrian/golib/pkg/sequencer/memory"
 )
 
 func FuzzCompilePlanDeterminism(fuzz *testing.F) {
@@ -49,6 +50,33 @@ func FuzzSanitizePersistenceText(fuzz *testing.F) {
 		}
 		if !utf8.ValidString(got) {
 			t.Fatalf("invalid UTF-8 output %q", got)
+		}
+	})
+}
+
+func FuzzMixedBinaryClaimsNeverCrossLocalVersion(fuzz *testing.F) {
+	fuzz.Add(uint8(1))
+	fuzz.Add(uint8(2))
+	fuzz.Fuzz(func(t *testing.T, selector uint8) {
+		version := uint(selector%2) + 1
+		checksums := map[uint]string{1: "sha256:v1", 2: "sha256:v2"}
+		store := memory.New()
+		now := time.Date(2026, 8, 9, 13, 0, 0, 0, time.UTC)
+		if err := store.Register(context.Background(), []sequencer.Registration{
+			{ID: "rolling", Version: 1, Checksum: checksums[1]},
+			{ID: "rolling", Version: 2, Checksum: checksums[2]},
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+		claim, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{
+			Candidates: []sequencer.ClaimCandidate{{ID: "rolling", Version: version, Checksum: checksums[version]}},
+			Owner:      "local-binary", Now: now, LeaseDuration: time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claim.Attempt.Version != version {
+			t.Fatalf("claimed version = %d, local version = %d", claim.Attempt.Version, version)
 		}
 	})
 }

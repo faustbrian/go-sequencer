@@ -69,6 +69,14 @@ func TestCompilePlanEnforcesBounds(t *testing.T) {
 	if !errors.Is(err, sequencer.ErrResourceLimit) {
 		t.Fatalf("error = %v, want ErrResourceLimit", err)
 	}
+	if _, err := sequencer.CompilePlan([]sequencer.OperationSpec{validSpec("a")}, sequencer.PlanOptions{MaxOperations: 1}); err != nil {
+		t.Fatalf("exact operation limit error = %v", err)
+	}
+	for _, options := range []sequencer.PlanOptions{{MaxOperations: -1}, {MaxDepth: -1}} {
+		if _, err := sequencer.CompilePlan(nil, options); !errors.Is(err, sequencer.ErrResourceLimit) {
+			t.Fatalf("negative options %+v error = %v", options, err)
+		}
+	}
 	_, err = sequencer.CompilePlan([]sequencer.OperationSpec{validSpec("")}, sequencer.PlanOptions{})
 	if !errors.Is(err, sequencer.ErrInvalidOperation) {
 		t.Fatalf("invalid operation error = %v", err)
@@ -78,6 +86,9 @@ func TestCompilePlanEnforcesBounds(t *testing.T) {
 	_, err = sequencer.CompilePlan([]sequencer.OperationSpec{a, b}, sequencer.PlanOptions{MaxDepth: 1})
 	if !errors.Is(err, sequencer.ErrResourceLimit) {
 		t.Fatalf("depth error = %v", err)
+	}
+	if _, err := sequencer.CompilePlan([]sequencer.OperationSpec{a, b}, sequencer.PlanOptions{MaxDepth: 2}); err != nil {
+		t.Fatalf("exact depth limit error = %v", err)
 	}
 }
 

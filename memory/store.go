@@ -25,12 +25,18 @@ type entry struct {
 
 // Store is a mutex-serialized reference implementation suitable for tests.
 type Store struct {
-	mu      sync.Mutex
-	entries map[key]*entry
+	mu       sync.Mutex
+	entries  map[key]*entry
+	versions map[sequencer.OperationID][]uint
 }
 
 // New constructs an empty store without background goroutines.
-func New() *Store { return &Store{entries: make(map[key]*entry)} }
+func New() *Store {
+	return &Store{
+		entries:  make(map[key]*entry),
+		versions: make(map[sequencer.OperationID][]uint),
+	}
+}
 
 // Register stores immutable operation identities and rejects checksum drift.
 func (store *Store) Register(ctx context.Context, registrations []sequencer.Registration, now time.Time) error {
@@ -55,6 +61,8 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 			Registration: registration, State: sequencer.Eligible,
 			EligibleAt: now, UpdatedAt: now,
 		}}
+		store.versions[registration.ID] = append(store.versions[registration.ID], registration.Version)
+		slices.Sort(store.versions[registration.ID])
 		store.entries[identifier].appendAudit(sequencer.Pending, sequencer.Eligible, now, "", "registered")
 	}
 	return nil
@@ -70,8 +78,21 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	for _, id := range request.OperationIDs {
-		current := store.latest(id)
+	candidates := request.Candidates
+	if len(candidates) == 0 {
+		candidates = make([]sequencer.ClaimCandidate, len(request.OperationIDs))
+		for index, id := range request.OperationIDs {
+			candidates[index] = sequencer.ClaimCandidate{ID: id}
+		}
+	}
+	for _, candidate := range candidates {
+		current := store.latest(candidate.ID)
+		if candidate.Version != 0 {
+			current = store.entries[key{candidate.ID, candidate.Version}]
+		}
+		if current != nil && candidate.Checksum != "" && current.record.Checksum != candidate.Checksum {
+			return sequencer.Claim{}, fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, candidate.ID, candidate.Version)
+		}
 		if current == nil || current.record.EligibleAt.After(request.Now) || !store.dependenciesSucceeded(current.record.Dependencies) {
 			continue
 		}
@@ -113,6 +134,9 @@ func (store *Store) MarkRunning(ctx context.Context, ownership sequencer.Ownersh
 	if err != nil {
 		return sequencer.AttemptRecord{}, err
 	}
+	if !now.Before(current.record.LeaseExpiresAt) {
+		return sequencer.AttemptRecord{}, sequencer.ErrStaleOwner
+	}
 	if err := sequencer.ValidateTransition(current.record.State, sequencer.Running); err != nil {
 		return sequencer.AttemptRecord{}, err
 	}
@@ -123,6 +147,34 @@ func (store *Store) MarkRunning(ctx context.Context, ownership sequencer.Ownersh
 	attempt.State = sequencer.Running
 	current.appendAudit(from, sequencer.Running, now, ownership.Owner, "started")
 	return cloneAttempt(*attempt), nil
+}
+
+// RenewLease extends a claimed or running attempt under its current fencing proof.
+func (store *Store) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	if duration <= 0 || now.IsZero() {
+		return time.Time{}, sequencer.ErrInvalidLease
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	current, err := store.owned(ownership)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !now.Before(current.record.LeaseExpiresAt) {
+		return time.Time{}, sequencer.ErrStaleOwner
+	}
+	if now.Before(current.record.UpdatedAt) {
+		return time.Time{}, sequencer.ErrInvalidLease
+	}
+	until := now.Add(duration)
+	if until.After(current.record.LeaseExpiresAt) {
+		current.record.LeaseExpiresAt = until
+		current.record.UpdatedAt = now
+	}
+	return current.record.LeaseExpiresAt, nil
 }
 
 // Complete atomically persists an attempt outcome and current projection.
@@ -136,6 +188,9 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if err != nil {
 		return err
 	}
+	if !completion.At.Before(current.record.LeaseExpiresAt) {
+		return sequencer.ErrStaleOwner
+	}
 	if err := sequencer.ValidateTransition(current.record.State, completion.State); err != nil {
 		return err
 	}
@@ -143,7 +198,6 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	current.record.State = completion.State
 	current.record.UpdatedAt = completion.At
 	current.record.LeaseExpiresAt = time.Time{}
-	current.record.Owner = ""
 	if completion.State == sequencer.Retryable || completion.State == sequencer.Deferred {
 		current.record.EligibleAt = completion.EligibleAt
 	}
@@ -160,6 +214,7 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 		reason = "completed"
 	}
 	current.appendAudit(from, completion.State, completion.At, actor, reason)
+	current.record.Owner = ""
 	return nil
 }
 
@@ -181,12 +236,12 @@ func (store *Store) RecoverExpired(ctx context.Context, now time.Time) (int, err
 		attempt.CompletedAt = now
 		attempt.ErrorDetail = sequencer.ErrUnknownResult.Error()
 		current.record.State = sequencer.Eligible
-		current.record.Owner = ""
 		current.record.LeaseExpiresAt = time.Time{}
 		current.record.EligibleAt = now
 		current.record.UpdatedAt = now
 		current.appendAudit(from, sequencer.Retryable, now, "system", "lease expired; outcome unknown")
 		current.appendAudit(sequencer.Retryable, sequencer.Eligible, now, "system", "recovered")
+		current.record.Owner = ""
 		recovered++
 	}
 	return recovered, nil
@@ -273,13 +328,11 @@ func (store *Store) Reset(ctx context.Context, request sequencer.ResetRequest) e
 }
 
 func (store *Store) latest(id sequencer.OperationID) *entry {
-	var selected *entry
-	for identifier, candidate := range store.entries {
-		if identifier.id == id && (selected == nil || identifier.version > selected.record.Version) {
-			selected = candidate
-		}
+	versions := store.versions[id]
+	if len(versions) == 0 {
+		return nil
 	}
-	return selected
+	return store.entries[key{id, versions[len(versions)-1]}]
 }
 
 func (store *Store) dependenciesSucceeded(dependencies []sequencer.OperationID) bool {
@@ -336,4 +389,5 @@ func cloneOutput(output sequencer.Output) sequencer.Output {
 }
 
 var _ sequencer.Store = (*Store)(nil)
+var _ sequencer.LeaseStore = (*Store)(nil)
 var _ = errors.Is

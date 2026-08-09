@@ -59,6 +59,7 @@ type Faults struct {
 	Register       error
 	ClaimNext      error
 	MarkRunning    error
+	RenewLease     error
 	Complete       error
 	RecoverExpired error
 	Snapshot       error
@@ -100,6 +101,18 @@ func (store *FaultStore) MarkRunning(ctx context.Context, ownership sequencer.Ow
 		return sequencer.AttemptRecord{}, store.faults.MarkRunning
 	}
 	return store.Store.MarkRunning(ctx, ownership, now)
+}
+
+// RenewLease injects the configured fault or delegates fenced renewal.
+func (store *FaultStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if store.faults.RenewLease != nil {
+		return time.Time{}, store.faults.RenewLease
+	}
+	leaseStore, ok := store.Store.(sequencer.LeaseStore)
+	if !ok {
+		return time.Time{}, sequencer.ErrInvalidLease
+	}
+	return leaseStore.RenewLease(ctx, ownership, now, duration)
 }
 
 // Complete injects the configured fault or delegates completion.
@@ -151,3 +164,4 @@ func (store *FaultStore) Reset(ctx context.Context, request sequencer.ResetReque
 }
 
 var _ sequencer.Store = (*FaultStore)(nil)
+var _ sequencer.LeaseStore = (*FaultStore)(nil)

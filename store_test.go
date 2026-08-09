@@ -48,4 +48,7 @@ func TestSanitizePersistenceTextBoundsAndNormalizes(t *testing.T) {
 	if got := sequencer.SanitizePersistenceText("value", 0); got != "" {
 		t.Fatalf("zero-bound value = %q", got)
 	}
+	if got := sequencer.SanitizePersistenceText("éa", 1); got != "" {
+		t.Fatalf("bounded value skipped a non-fitting prefix rune: %q", got)
+	}
 }

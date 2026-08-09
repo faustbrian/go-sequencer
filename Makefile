@@ -59,7 +59,7 @@ safety:
 	./scripts/check-safety.sh
 
 workflows:
-	GOWORK=off $(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
+	GOWORK=off $(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) ../../.github/workflows/ci.yml
 
 check: tidy-check format-check vet staticcheck lint test integration race \
 	coverage fuzz mutation benchmark docs safety vuln workflows

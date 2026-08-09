@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	"github.com/faustbrian/golib/pkg/sequencer/goretry"
 	"github.com/faustbrian/golib/pkg/sequencer/memory"
 	"github.com/faustbrian/golib/pkg/sequencer/sequencertest"
 )
@@ -68,7 +70,7 @@ func TestRunnerRetriesTypedFailuresWithinBudget(t *testing.T) {
 		return sequencer.Output{Summary: "recovered"}, nil
 	})
 	plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
-	store := memory.New()
+	store := &completionInspectStore{Store: memory.New()}
 	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica", Clock: newManualClock(time.Now())})
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +81,282 @@ func TestRunnerRetriesTypedFailuresWithinBudget(t *testing.T) {
 	history, err := store.History(context.Background(), "retry", 1, 10)
 	if err != nil || len(history) != 2 || history[0].State != sequencer.Retryable || history[1].State != sequencer.Succeeded {
 		t.Fatalf("History() = %+v, %v", history, err)
+	}
+	completions := store.completionsSnapshot()
+	if len(completions) != 2 || completions[0].EligibleAt.IsZero() || !completions[1].EligibleAt.IsZero() {
+		t.Fatalf("completion eligibility = %+v", completions)
+	}
+}
+
+func TestRunnerStopsDurableRetriesAtTheExactAttemptBudget(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("retry-exhausted")
+	spec.Policy.MaxAttempts, spec.Policy.MaxExceptions = 2, 2
+	invocations := 0
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		invocations++
+		return sequencer.Output{}, sequencer.Retry(errors.New("still busy"))
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := runner.Execute(ctx); !errors.Is(err, sequencer.ErrRetryable) {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 10)
+	if err != nil || len(history) != 2 || invocations != 2 || history[1].State != sequencer.Failed {
+		t.Fatalf("History() = %+v, %v; invocations = %d", history, err, invocations)
+	}
+}
+
+func TestRunnerStopsDurableRetriesAtTheLowerExceptionBudget(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("retry-exception-exhausted")
+	spec.Policy.MaxAttempts, spec.Policy.MaxExceptions = 4, 2
+	invocations := 0
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		invocations++
+		return sequencer.Output{}, sequencer.Retry(errors.New("still busy"))
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); !errors.Is(err, sequencer.ErrRetryable) {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 10)
+	if err != nil || len(history) != 2 || invocations != 2 || history[1].State != sequencer.Failed {
+		t.Fatalf("History() = %+v, %v; invocations = %d", history, err, invocations)
+	}
+}
+
+func TestRunnerStopsDurableRetriesAtTheLowerAttemptBudget(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("retry-attempt-exhausted")
+	spec.Policy.MaxAttempts, spec.Policy.MaxExceptions = 2, 4
+	invocations := 0
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		invocations++
+		return sequencer.Output{}, sequencer.Retry(errors.New("still busy"))
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); !errors.Is(err, sequencer.ErrRetryable) {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 10)
+	if err != nil || len(history) != 2 || invocations != 2 || history[1].State != sequencer.Failed {
+		t.Fatalf("History() = %+v, %v; invocations = %d", history, err, invocations)
+	}
+}
+
+func TestRunnerUsesExactlyOneInlineRetryLoopWithSharedBudget(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := goretry.New(inlineRetryPolicy{attempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := validSpec("inline-retry")
+	spec.Policy.RetryMode = sequencer.InlineRetries
+	spec.Policy.MaxAttempts = 2
+	spec.Policy.MaxExceptions = 2
+	invocations := 0
+	spec.Handler = sequencer.HandlerFunc(func(ctx context.Context, attempt sequencer.Attempt) (sequencer.Output, error) {
+		err := adapter.Do(ctx, attempt.Budget, func(context.Context) error {
+			invocations++
+			if invocations == 1 {
+				return errors.New("transient")
+			}
+			return nil
+		})
+		if err != nil {
+			return sequencer.Output{}, err
+		}
+		return sequencer.Output{Summary: "recovered inline"}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "pod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 10)
+	if err != nil || len(history) != 1 || history[0].State != sequencer.Succeeded || invocations != 2 {
+		t.Fatalf("History() = %+v, %v; inline invocations = %d", history, err, invocations)
+	}
+}
+
+func TestRunnerInlineRetryBudgetUsesTheLowerExceptionBound(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := goretry.New(inlineRetryPolicy{attempts: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := validSpec("inline-exceptions")
+	spec.Policy.RetryMode = sequencer.InlineRetries
+	spec.Policy.MaxAttempts = 4
+	spec.Policy.MaxExceptions = 2
+	invocations := 0
+	spec.Handler = sequencer.HandlerFunc(func(ctx context.Context, attempt sequencer.Attempt) (sequencer.Output, error) {
+		err := adapter.Do(ctx, attempt.Budget, func(context.Context) error {
+			invocations++
+			return errors.New("transient")
+		})
+		return sequencer.Output{}, err
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "pod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); !errors.Is(err, sequencer.ErrBudgetExhausted) || invocations != 2 {
+		t.Fatalf("Execute() error = %v, inline invocations = %d", err, invocations)
+	}
+}
+
+func TestRunnerInlineRetryBudgetUsesTheLowerAttemptBound(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := goretry.New(inlineRetryPolicy{attempts: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := validSpec("inline-attempts")
+	spec.Policy.RetryMode = sequencer.InlineRetries
+	spec.Policy.MaxAttempts = 2
+	spec.Policy.MaxExceptions = 4
+	invocations := 0
+	spec.Handler = sequencer.HandlerFunc(func(ctx context.Context, attempt sequencer.Attempt) (sequencer.Output, error) {
+		err := adapter.Do(ctx, attempt.Budget, func(context.Context) error {
+			invocations++
+			return errors.New("transient")
+		})
+		return sequencer.Output{}, err
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "pod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); !errors.Is(err, sequencer.ErrBudgetExhausted) || invocations != 2 {
+		t.Fatalf("Execute() error = %v, inline invocations = %d", err, invocations)
+	}
+}
+
+func TestRunnerInlineRetryableFailureDoesNotStartADurableRetry(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("inline-no-durable-retry")
+	spec.Policy.RetryMode = sequencer.InlineRetries
+	spec.Policy.MaxAttempts, spec.Policy.MaxExceptions = 2, 2
+	invocations := 0
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		invocations++
+		return sequencer.Output{}, sequencer.Retry(errors.New("inline owner exhausted"))
+	})
+	plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	store := memory.New()
+	runner, _ := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "pod"})
+	if _, err := runner.Execute(context.Background()); !errors.Is(err, sequencer.ErrRetryable) {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 10)
+	if err != nil || len(history) != 1 || history[0].State != sequencer.Failed || invocations != 1 {
+		t.Fatalf("History() = %+v, %v; invocations = %d", history, err, invocations)
+	}
+}
+
+func TestRunnerPinsLocalRegistryAcrossRollingDeploymentAndRollback(t *testing.T) {
+	t.Parallel()
+
+	store := memory.New()
+	now := time.Now()
+	if err := store.Register(context.Background(), []sequencer.Registration{{
+		ID: "rolling", Version: 2, Checksum: "sha256:v2",
+	}}, now); err != nil {
+		t.Fatal(err)
+	}
+	executed := make([]uint, 0, 2)
+	operation := func(version uint, checksum string) sequencer.OperationSpec {
+		spec := validSpec("rolling")
+		spec.Version, spec.Checksum = version, checksum
+		spec.Handler = sequencer.HandlerFunc(func(_ context.Context, attempt sequencer.Attempt) (sequencer.Output, error) {
+			executed = append(executed, attempt.Version)
+			return sequencer.Output{}, nil
+		})
+		return spec
+	}
+	oldPlan, err := sequencer.CompilePlan([]sequencer.OperationSpec{operation(1, "sha256:v1")}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRunner, err := sequencer.NewRunner(oldPlan, store, sequencer.RunnerOptions{Owner: "old-pod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oldRunner.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(executed) != 1 || executed[0] != 1 {
+		t.Fatalf("old binary executions = %v", executed)
+	}
+
+	newPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{operation(2, "sha256:v2")}, sequencer.PlanOptions{})
+	newRunner, _ := sequencer.NewRunner(newPlan, store, sequencer.RunnerOptions{Owner: "new-pod"})
+	if _, err := newRunner.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(executed) != 2 || executed[1] != 2 {
+		t.Fatalf("new binary executions = %v", executed)
+	}
+	if report, err := oldRunner.Execute(context.Background()); err != nil || report.Operations[0].State != sequencer.Succeeded {
+		t.Fatalf("rollback Execute() = %+v, %v", report, err)
+	}
+	if len(executed) != 2 {
+		t.Fatalf("rollback executions = %v, want no re-execution", executed)
+	}
+	driftPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{operation(1, "sha256:changed")}, sequencer.PlanOptions{})
+	driftRunner, _ := sequencer.NewRunner(driftPlan, store, sequencer.RunnerOptions{Owner: "drifted-pod"})
+	if _, err := driftRunner.Execute(context.Background()); !errors.Is(err, sequencer.ErrChecksumDrift) {
+		t.Fatalf("drifted Execute() error = %v", err)
 	}
 }
 
@@ -124,6 +402,36 @@ func TestRunnerRequiresDeclaredApprovalAndEnvironment(t *testing.T) {
 	_, err = sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "replica", Environment: "production"})
 	if !errors.Is(err, sequencer.ErrApprovalRequired) {
 		t.Fatalf("NewRunner() error = %v", err)
+	}
+}
+
+func TestRunnerAcceptsExactObserverAndLeaseBoundaries(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("runner.bounds")
+	spec.Policy.Timeout = time.Second - time.Nanosecond
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observers := make([]sequencer.Observer, 128)
+	if _, err := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{
+		Owner: "pod", LeaseDuration: time.Second, Observers: observers,
+	}); err != nil {
+		t.Fatalf("exact runner limits error = %v", err)
+	}
+	if _, err := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{
+		Owner: "pod", LeaseDuration: time.Second, Observers: append(observers, nil),
+	}); !errors.Is(err, sequencer.ErrInvalidRunner) {
+		t.Fatalf("observer overflow error = %v", err)
+	}
+	equal := validSpec("runner.equal-lease")
+	equal.Policy.Timeout = time.Second
+	equalPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{equal}, sequencer.PlanOptions{})
+	if _, err := sequencer.NewRunner(equalPlan, memory.New(), sequencer.RunnerOptions{
+		Owner: "pod", LeaseDuration: time.Second,
+	}); !errors.Is(err, sequencer.ErrInvalidRunner) {
+		t.Fatalf("equal timeout and lease error = %v", err)
 	}
 }
 
@@ -180,6 +488,44 @@ func TestRunnerAuditsConditionalSkipWithoutInvokingHandler(t *testing.T) {
 	}
 }
 
+func TestRunnerAuditsOnlyActualConditionReasons(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		condition  sequencer.Condition
+		wantActor  string
+		wantReason string
+	}{
+		{name: "no-condition", wantActor: "replica", wantReason: "completed"},
+		{
+			name: "empty-decline",
+			condition: sequencer.ConditionFunc(func(context.Context, sequencer.Attempt) (sequencer.Decision, error) {
+				return sequencer.Decision{Run: false}, nil
+			}),
+			wantActor: "condition", wantReason: "condition declined execution",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec := validSpec(sequencer.OperationID("audit-" + test.name))
+			spec.Condition = test.condition
+			plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+			store := memory.New()
+			runner, _ := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
+			_, _ = runner.Execute(context.Background())
+			audit, err := store.Audit(context.Background(), spec.ID, spec.Version, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			completed := audit[len(audit)-1]
+			if completed.Actor != test.wantActor || completed.Reason != test.wantReason {
+				t.Fatalf("completion audit = %+v", completed)
+			}
+		})
+	}
+}
+
 func TestRunnerSanitizesFailuresAndRecoversPanics(t *testing.T) {
 	t.Parallel()
 
@@ -211,6 +557,31 @@ func TestRunnerSanitizesFailuresAndRecoversPanics(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotPersistOutputFromFailedAttempt(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("failed-output")
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		return sequencer.Output{Summary: "secret partial result", Metadata: map[string]string{"token": "secret"}}, errors.New("failed")
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "pod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); err == nil {
+		t.Fatal("Execute() error = nil")
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 1)
+	if err != nil || history[0].Output.Summary != "" || history[0].Output.Metadata != nil {
+		t.Fatalf("History() = %+v, %v", history, err)
+	}
+}
+
 func TestRunnerFailsClosedOnOversizedOutput(t *testing.T) {
 	t.Parallel()
 
@@ -236,6 +607,7 @@ func TestRunnerFailsClosedOnOversizedOutput(t *testing.T) {
 	outputs := []sequencer.Output{
 		{Metadata: tooMany},
 		{Metadata: map[string]string{"": "value"}},
+		{Metadata: map[string]string{strings.Repeat("k", 129): "value"}},
 		{Metadata: map[string]string{"key": string(make([]byte, 4_097))}},
 	}
 	for index, output := range outputs {
@@ -261,6 +633,28 @@ func TestRunnerFailsClosedOnOversizedOutput(t *testing.T) {
 	history, _ = validStore.History(context.Background(), "valid-output", 1, 1)
 	if history[0].Output.Summary != "done" || history[0].Output.Metadata["count"] != "1" {
 		t.Fatalf("sanitized output = %+v", history[0].Output)
+	}
+
+	exactMetadata := make(map[string]string, sequencer.DefaultMaxOutputMetadata)
+	exactMetadata[strings.Repeat("k", 128)] = strings.Repeat("v", 4_096)
+	for index := 1; index < sequencer.DefaultMaxOutputMetadata; index++ {
+		exactMetadata[fmt.Sprintf("key-%d", index)] = "value"
+	}
+	exactOutput := validSpec("exact-output")
+	exactOutput.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		return sequencer.Output{Summary: strings.Repeat("s", sequencer.DefaultMaxOutputBytes), Metadata: exactMetadata}, nil
+	})
+	plan, _ = sequencer.CompilePlan([]sequencer.OperationSpec{exactOutput}, sequencer.PlanOptions{})
+	exactStore := memory.New()
+	runner, _ = sequencer.NewRunner(plan, exactStore, sequencer.RunnerOptions{Owner: "replica"})
+	if _, err := runner.Execute(context.Background()); err != nil {
+		t.Fatalf("exact bounded output error = %v", err)
+	}
+	history, _ = exactStore.History(context.Background(), exactOutput.ID, exactOutput.Version, 1)
+	if len(history[0].Output.Summary) != sequencer.DefaultMaxOutputBytes ||
+		len(history[0].Output.Metadata) != sequencer.DefaultMaxOutputMetadata ||
+		len(history[0].Output.Metadata[strings.Repeat("k", 128)]) != 4_096 {
+		t.Fatalf("exact bounded output = %+v", history[0].Output)
 	}
 }
 
@@ -426,6 +820,19 @@ func (clock *manualClock) Now() time.Time {
 type transactionManager struct {
 	transaction any
 	calls       int
+}
+
+type inlineRetryPolicy struct{ attempts int }
+
+func (policy inlineRetryPolicy) Do(ctx context.Context, operation func(context.Context) error) error {
+	var err error
+	for range policy.attempts {
+		err = operation(ctx)
+		if err == nil || errors.Is(err, sequencer.ErrBudgetExhausted) {
+			return err
+		}
+	}
+	return err
 }
 
 func (manager *transactionManager) Within(_ context.Context, execute func(context.Context, any) error) error {

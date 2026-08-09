@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +29,12 @@ func TestIntegerConversionsRejectInvalidLedgerValues(t *testing.T) {
 	}
 	if value, err := toUint(1); err != nil || value != 1 {
 		t.Fatalf("toUint(1) = %d, %v", value, err)
+	}
+	if value, err := toUint(0); err != nil || value != 0 {
+		t.Fatalf("toUint(0) = %d, %v", value, err)
+	}
+	if value, err := toUint64(0); err != nil || value != 0 {
+		t.Fatalf("toUint64(0) = %d, %v", value, err)
 	}
 	if value, err := toUint64(1); err != nil || value != 1 {
 		t.Fatalf("toUint64(1) = %d, %v", value, err)
@@ -127,8 +135,21 @@ func TestStoreClaimTransactionFailures(t *testing.T) {
 		})
 	}
 	store := newStore(&fakeDatabase{})
-	if _, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{}); !errors.Is(err, sequencer.ErrInvalidOperation) {
-		t.Fatalf("ClaimNext(invalid) error = %v", err)
+	for _, request := range []sequencer.ClaimRequest{
+		{OperationIDs: []sequencer.OperationID{"a"}, LeaseDuration: time.Minute},
+		{OperationIDs: []sequencer.OperationID{"a"}, Owner: "owner"},
+		{OperationIDs: []sequencer.OperationID{"a"}, Owner: "owner", LeaseDuration: -time.Second},
+		{Owner: "owner", LeaseDuration: time.Minute},
+	} {
+		if _, err := store.ClaimNext(context.Background(), request); !errors.Is(err, sequencer.ErrInvalidOperation) {
+			t.Fatalf("ClaimNext(%+v) error = %v", request, err)
+		}
+	}
+	if _, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: "a", Version: ^uint(0), Checksum: "sum"}},
+		Owner:      "owner", LeaseDuration: time.Minute,
+	}); !errors.Is(err, errInvalidLedgerInteger) {
+		t.Fatalf("ClaimNext(overflow) error = %v", err)
 	}
 }
 
@@ -159,6 +180,33 @@ func TestStoreMarkRunningTransactionFailures(t *testing.T) {
 				t.Fatalf("MarkRunning() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestStoreRenewLeaseUsesFencingAndDatabaseTime(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	until := time.Date(2026, 8, 9, 10, 5, 0, 0, time.UTC)
+	store := newStore(&fakeDatabase{row: scriptedRow{values: []any{until}}})
+	got, err := store.RenewLease(ctx, validOwnership(), time.Now(), time.Minute)
+	if err != nil || !got.Equal(until) {
+		t.Fatalf("RenewLease() = %s, %v; want %s", got, err, until)
+	}
+	stale := newStore(&fakeDatabase{row: scriptedRow{err: pgx.ErrNoRows}})
+	if _, err := stale.RenewLease(ctx, validOwnership(), time.Now(), time.Minute); !errors.Is(err, sequencer.ErrStaleOwner) {
+		t.Fatalf("stale RenewLease() error = %v", err)
+	}
+	cause := errors.New("database")
+	failed := newStore(&fakeDatabase{row: scriptedRow{err: cause}})
+	if _, err := failed.RenewLease(ctx, validOwnership(), time.Now(), time.Minute); !errors.Is(err, cause) {
+		t.Fatalf("failed RenewLease() error = %v", err)
+	}
+	if _, err := store.RenewLease(ctx, validOwnership(), time.Now(), 0); !errors.Is(err, sequencer.ErrInvalidLease) {
+		t.Fatalf("invalid RenewLease() error = %v", err)
+	}
+	if _, err := store.RenewLease(ctx, validOwnership(), time.Now(), time.Nanosecond); !errors.Is(err, sequencer.ErrInvalidLease) {
+		t.Fatalf("sub-millisecond RenewLease() error = %v", err)
 	}
 }
 
@@ -196,6 +244,16 @@ func TestStoreCompleteTransactionFailures(t *testing.T) {
 	large.Output.Summary = string(make([]byte, sequencer.DefaultMaxOutputBytes+1))
 	if err := store.Complete(context.Background(), large); !errors.Is(err, sequencer.ErrResourceLimit) {
 		t.Fatalf("Complete(output) error = %v", err)
+	}
+	exact := validCompletion()
+	emptyJSON, err := json.Marshal(exact.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact.Output.Summary = strings.Repeat("x", sequencer.DefaultMaxOutputBytes-len(emptyJSON))
+	exactStore := newStore(&fakeDatabase{tx: &fakeTx{rows: []pgx.Row{completionRow()}, execErrs: []error{nil, nil}}})
+	if err := exactStore.Complete(context.Background(), exact); err != nil {
+		t.Fatalf("Complete(exact output bound) error = %v", err)
 	}
 	overflow := validCompletion()
 	overflow.Version = ^uint(0)
@@ -270,6 +328,14 @@ func TestStoreReadDecodingFailures(t *testing.T) {
 	if _, err := store.Audit(ctx, "a", 1, 0); !errors.Is(err, sequencer.ErrResourceLimit) {
 		t.Fatalf("Audit(limit) error = %v", err)
 	}
+	bounded := newStore(&fakeDatabase{rows: &fakeRows{}})
+	if _, err := bounded.History(ctx, "a", 1, sequencer.DefaultMaxHistory); err != nil {
+		t.Fatalf("History(exact maximum) error = %v", err)
+	}
+	bounded = newStore(&fakeDatabase{rows: &fakeRows{}})
+	if _, err := bounded.Audit(ctx, "a", 1, sequencer.DefaultMaxHistory); err != nil {
+		t.Fatalf("Audit(exact maximum) error = %v", err)
+	}
 }
 
 func TestStoreResetTransactionFailures(t *testing.T) {
@@ -303,8 +369,13 @@ func TestStoreResetTransactionFailures(t *testing.T) {
 			}
 		})
 	}
-	if err := newStore(&fakeDatabase{}).Reset(context.Background(), sequencer.ResetRequest{}); !errors.Is(err, sequencer.ErrResetForbidden) {
-		t.Fatalf("Reset(invalid) error = %v", err)
+	for _, request := range []sequencer.ResetRequest{
+		{Reason: "why"},
+		{Actor: "op"},
+	} {
+		if err := newStore(&fakeDatabase{}).Reset(context.Background(), request); !errors.Is(err, sequencer.ErrResetForbidden) {
+			t.Fatalf("Reset(%+v) error = %v", request, err)
+		}
 	}
 	overflow := sequencer.ResetRequest{OperationID: "a", Version: ^uint(0), Actor: "op", Reason: "why"}
 	if err := newStore(&fakeDatabase{tx: &fakeTx{rows: []pgx.Row{success}}}).Reset(context.Background(), overflow); !errors.Is(err, errInvalidLedgerInteger) {
@@ -317,6 +388,15 @@ func TestSmallPostgresHelpers(t *testing.T) {
 
 	if got := firstNonEmpty("", ""); got != "" {
 		t.Fatalf("firstNonEmpty() = %q", got)
+	}
+	if got := firstNonEmpty("", "second"); got != "second" {
+		t.Fatalf("firstNonEmpty(second) = %q", got)
+	}
+	if got := firstNonEmpty("first", "second"); got != "first" {
+		t.Fatalf("firstNonEmpty(first) = %q", got)
+	}
+	if got, err := parseState(sequencer.Blocked.String()); err != nil || got != sequencer.Blocked {
+		t.Fatalf("parseState(blocked) = %s, %v", got, err)
 	}
 }
 

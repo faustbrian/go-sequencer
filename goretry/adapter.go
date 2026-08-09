@@ -49,10 +49,16 @@ func New(policy Policy) (*Adapter, error) {
 	return &Adapter{policy: policy}, nil
 }
 
-// Do executes through the configured policy.
-func (adapter *Adapter) Do(ctx context.Context, operation func(context.Context) error) error {
-	if operation == nil {
+// Do executes through the configured policy while every callback invocation
+// consumes the caller's shared execution budget.
+func (adapter *Adapter) Do(ctx context.Context, budget *sequencer.ExecutionBudget, operation func(context.Context) error) error {
+	if budget == nil || operation == nil {
 		return ErrInvalidAdapter
 	}
-	return adapter.policy.Do(ctx, operation)
+	return adapter.policy.Do(ctx, func(operationContext context.Context) error {
+		if err := budget.Take(); err != nil {
+			return err
+		}
+		return operation(operationContext)
+	})
 }

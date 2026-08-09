@@ -57,6 +57,29 @@ const (
 	Repeatable
 )
 
+// CancellationMode defines whether process shutdown may cancel an accepted
+// handler. It does not make cancellation capable of stopping external effects.
+type CancellationMode uint8
+
+const (
+	// CancellationCooperative delivers shutdown cancellation to the handler.
+	CancellationCooperative CancellationMode = iota
+	// CancellationDrainOnly keeps the handler context alive while shutdown waits.
+	// If the wait expires, the runner fails and Kubernetes must terminate the pod;
+	// the durable lease later recovers the attempt with an unknown outcome.
+	CancellationDrainOnly
+)
+
+// RetryMode selects the sole owner of an operation's retry loop.
+type RetryMode uint8
+
+const (
+	// DurableRetries creates a new fenced ledger attempt for each retry.
+	DurableRetries RetryMode = iota
+	// InlineRetries delegates the only retry loop to a bounded handler adapter.
+	InlineRetries
+)
+
 // Policy declares bounded execution and failure behavior.
 type Policy struct {
 	Mode              ExecutionMode
@@ -67,6 +90,8 @@ type Policy struct {
 	RequiresApproval  bool
 	AllowedFailure    bool
 	DeadLetter        bool
+	Cancellation      CancellationMode
+	RetryMode         RetryMode
 }
 
 // Output is the bounded, non-secret result safe to retain in the ledger.
@@ -84,6 +109,9 @@ type Attempt struct {
 	Fencing     uint64
 	StartedAt   time.Time
 	Transaction any
+	// Budget is non-nil only for InlineRetries. Every inline callback
+	// execution must consume it.
+	Budget *ExecutionBudget
 }
 
 // Handler executes one local attempt. Dependencies belong in the concrete
@@ -142,8 +170,9 @@ func NewOperation(spec OperationSpec) (Operation, error) {
 	if !identifierPattern.MatchString(string(spec.ID)) || spec.Version == 0 ||
 		spec.Checksum == "" || spec.Description == "" || spec.Channel == "" ||
 		spec.Handler == nil || spec.Policy.MaxAttempts == 0 || spec.Policy.MaxExceptions == 0 ||
-		spec.Policy.MaxExceptions > spec.Policy.MaxAttempts ||
 		(spec.Policy.Mode != OneTime && spec.Policy.Mode != Repeatable) ||
+		spec.Policy.Cancellation > CancellationDrainOnly ||
+		spec.Policy.RetryMode > InlineRetries ||
 		spec.Policy.Timeout <= 0 || len(spec.Dependencies) > DefaultMaxDependencies ||
 		len(spec.Tags) > DefaultMaxTags {
 		return Operation{}, ErrInvalidOperation

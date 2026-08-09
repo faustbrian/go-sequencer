@@ -11,6 +11,7 @@
 - [Retries and dead letters](retries.md)
 - [Rollback and compensation](rollback.md)
 - [Crash recovery](recovery.md)
+- [Kubernetes fleet operation](kubernetes.md)
 - [Operations guide](operations.md)
 - [Security](security.md)
 - [Performance](performance.md)

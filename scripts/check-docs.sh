@@ -6,6 +6,7 @@ required=(
   docs/api.md docs/quickstart.md docs/lifecycle.md docs/ordering.md
   docs/transactions.md docs/async.md docs/deployment.md docs/migrations.md
   docs/retries.md docs/rollback.md docs/recovery.md docs/operations.md
+  docs/kubernetes.md
   docs/security.md docs/performance.md docs/laravel-migration.md
   docs/cookbook.md docs/faq.md docs/compatibility.md
 )

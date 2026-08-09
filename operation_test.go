@@ -3,6 +3,7 @@ package sequencer_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -52,6 +53,26 @@ func TestNewOperationValidatesAndFreezesMetadata(t *testing.T) {
 	}
 }
 
+func TestNewOperationAcceptsEveryBoundedModeAndExactCollectionLimit(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("repeatable.bounds")
+	spec.Policy.Mode = sequencer.Repeatable
+	spec.Policy.MaxAttempts = 1
+	spec.Policy.MaxExceptions = 2
+	spec.Dependencies = make([]sequencer.OperationID, sequencer.DefaultMaxDependencies)
+	for index := range spec.Dependencies {
+		spec.Dependencies[index] = sequencer.OperationID(fmt.Sprintf("dependency-%d", index))
+	}
+	spec.Tags = make([]string, sequencer.DefaultMaxTags)
+	for index := range spec.Tags {
+		spec.Tags[index] = fmt.Sprintf("tag-%d", index)
+	}
+	if _, err := sequencer.NewOperation(spec); err != nil {
+		t.Fatalf("NewOperation() exact limits error = %v", err)
+	}
+}
+
 func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 	t.Parallel()
 
@@ -65,6 +86,24 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 		{name: "unbounded attempts", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Policy.MaxAttempts = 0; return s }()},
 		{name: "unbounded exceptions", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Policy.MaxExceptions = 0; return s }()},
 		{name: "unbounded timeout", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Policy.Timeout = 0; return s }()},
+		{name: "invalid mode", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.Policy.Mode = sequencer.ExecutionMode(255)
+			return s
+		}()},
+		{name: "too many dependencies", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.Dependencies = make([]sequencer.OperationID, sequencer.DefaultMaxDependencies+1)
+			for index := range s.Dependencies {
+				s.Dependencies[index] = sequencer.OperationID(fmt.Sprintf("d-%d", index))
+			}
+			return s
+		}()},
+		{name: "too many tags", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.Tags = make([]string, sequencer.DefaultMaxTags+1)
+			return s
+		}()},
 		{name: "self dependency", spec: func() sequencer.OperationSpec {
 			s := validSpec("a")
 			s.Dependencies = []sequencer.OperationID{"a"}

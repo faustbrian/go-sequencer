@@ -19,6 +19,9 @@ type Plan struct {
 
 // CompilePlan validates and freezes a complete operation graph.
 func CompilePlan(specs []OperationSpec, options PlanOptions) (*Plan, error) {
+	if options.MaxOperations < 0 || options.MaxDepth < 0 {
+		return nil, ErrResourceLimit
+	}
 	maximum := options.MaxOperations
 	if maximum == 0 {
 		maximum = DefaultMaxOperations
@@ -27,7 +30,7 @@ func CompilePlan(specs []OperationSpec, options PlanOptions) (*Plan, error) {
 	if maxDepth == 0 {
 		maxDepth = DefaultMaxGraphDepth
 	}
-	if maximum < 1 || maxDepth < 1 || len(specs) > maximum {
+	if len(specs) > maximum {
 		return nil, ErrResourceLimit
 	}
 

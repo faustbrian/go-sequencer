@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/bits"
 	"slices"
 	"time"
 )
@@ -54,6 +55,8 @@ const (
 	EventRunning
 	// EventCompleted reports a durably recorded outcome.
 	EventCompleted
+	// EventHeartbeat reports a successful fenced lease renewal.
+	EventHeartbeat
 )
 
 // Event carries bounded execution metadata to an observer.
@@ -66,7 +69,9 @@ type Event struct {
 	Err       error
 }
 
-// Observer receives synchronous lifecycle notifications.
+// Observer receives synchronous lifecycle notifications and must return
+// promptly without network I/O. Fleet observers may be called concurrently
+// for different accepted attempts.
 type Observer interface{ Observe(Event) }
 
 // ObserverFunc adapts a function to Observer.
@@ -127,14 +132,14 @@ func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) 
 	if plan == nil || store == nil || options.Owner == "" {
 		return nil, ErrInvalidRunner
 	}
+	if options.LeaseDuration < 0 || len(options.Observers) > 128 {
+		return nil, ErrInvalidRunner
+	}
 	if options.Clock == nil {
 		options.Clock = wallClock{}
 	}
 	if options.LeaseDuration == 0 {
 		options.LeaseDuration = DefaultLeaseDuration
-	}
-	if options.LeaseDuration < 0 || len(options.Observers) > 128 {
-		return nil, ErrInvalidRunner
 	}
 	options.Observers = slices.Clone(options.Observers)
 	for _, operation := range plan.operations {
@@ -191,16 +196,20 @@ func (runner *Runner) Execute(ctx context.Context) (Report, error) {
 func (runner *Runner) executeOperation(ctx context.Context, operation Operation) (OperationResult, error) {
 	spec := operation.spec
 	result := OperationResult{OperationID: spec.ID, Version: spec.Version}
-	if record, err := runner.store.Snapshot(ctx, spec.ID, spec.Version); err == nil && record.State == Succeeded && spec.Policy.Mode == OneTime {
-		result.State = Succeeded
-		result.Attempts = record.AttemptNumber
-		return result, nil
+	if record, err := runner.store.Snapshot(ctx, spec.ID, spec.Version); err == nil {
+		if record.State == Succeeded {
+			if spec.Policy.Mode == OneTime {
+				result.State = Succeeded
+				result.Attempts = record.AttemptNumber
+				return result, nil
+			}
+		}
 	}
 	exceptions := uint(0)
-	for attemptsThisRun := uint(1); ; attemptsThisRun++ {
+	for attemptsThisRun := uint(1); ; attemptsThisRun = nextAttempt(attemptsThisRun) {
 		now := runner.options.Clock.Now()
 		claim, err := runner.store.ClaimNext(ctx, ClaimRequest{
-			OperationIDs: []OperationID{spec.ID}, Owner: runner.options.Owner,
+			Candidates: []ClaimCandidate{{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum}}, Owner: runner.options.Owner,
 			Now: now, LeaseDuration: runner.options.LeaseDuration,
 		})
 		if err != nil {
@@ -215,32 +224,11 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 		}
 		runner.observe(Event{Type: EventRunning, Operation: spec.ID, Attempt: claim.Attempt.Number, State: Running, At: now})
 
-		var output Output
-		var executionErr error
-		var actor, reason string
-		if spec.Policy.RequiresApproval {
-			approval, approvalErr := runner.options.Approver.Approve(ctx, cloneSpec(spec))
-			actor, reason = approval.Actor, approval.Reason
-			if approvalErr != nil || !approval.Approved || actor == "" || reason == "" {
-				if approvalErr == nil {
-					approvalErr = ErrBlocked
-				}
-				executionErr = Block(approvalErr)
-			}
+		output, actor, reason, executionErr := runner.runAttempt(ctx, spec, claim.Attempt)
+		if errors.Is(executionErr, ErrRetryable) {
+			exceptions = nextAttempt(exceptions)
 		}
-		if executionErr == nil {
-			output, reason, executionErr = runner.invoke(ctx, spec, claim.Attempt)
-			if reason != "" {
-				actor = "condition"
-			}
-		}
-		if executionErr == nil {
-			output, executionErr = prepareOutput(output)
-		}
-		if executionErr != nil && !errors.Is(executionErr, ErrSkipped) && !errors.Is(executionErr, ErrBlocked) {
-			exceptions++
-		}
-		state := classifyState(executionErr, attemptsThisRun, spec.Policy.MaxAttempts, exceptions, spec.Policy.MaxExceptions)
+		state := classifyState(executionErr, spec.Policy.RetryMode, attemptsThisRun, spec.Policy.MaxAttempts, exceptions, spec.Policy.MaxExceptions)
 		completion := Completion{
 			Ownership: claim.Ownership(), State: state,
 			At: runner.options.Clock.Now(), Output: output,
@@ -268,12 +256,37 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 	}
 }
 
-func (runner *Runner) invoke(ctx context.Context, spec OperationSpec, attempt Attempt) (Output, string, error) {
-	if spec.Policy.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, spec.Policy.Timeout)
-		defer cancel()
+func nextAttempt(current uint) uint {
+	next, _ := bits.Add64(uint64(current), 1, 0)
+	return uint(next)
+}
+
+func (runner *Runner) runAttempt(ctx context.Context, spec OperationSpec, attempt Attempt) (Output, string, string, error) {
+	var actor, reason string
+	if spec.Policy.RequiresApproval {
+		approval, err := runner.options.Approver.Approve(ctx, cloneSpec(spec))
+		actor, reason = approval.Actor, approval.Reason
+		if err != nil || !approval.Approved || actor == "" || reason == "" {
+			return Output{}, actor, reason, Block(errors.Join(ErrBlocked, err))
+		}
 	}
+	if spec.Policy.RetryMode == InlineRetries {
+		attempt.Budget, _ = NewExecutionBudget(min(spec.Policy.MaxAttempts, spec.Policy.MaxExceptions))
+	}
+	output, conditionReason, err := runner.invoke(ctx, spec, attempt)
+	if conditionReason != "" {
+		actor, reason = "condition", conditionReason
+	}
+	if err != nil {
+		return Output{}, actor, reason, err
+	}
+	output, err = prepareOutput(output)
+	return output, actor, reason, err
+}
+
+func (runner *Runner) invoke(ctx context.Context, spec OperationSpec, attempt Attempt) (Output, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, spec.Policy.Timeout)
+	defer cancel()
 	if !spec.Policy.WithinTransaction {
 		return executeAttempt(ctx, spec, attempt)
 	}
@@ -312,7 +325,7 @@ func executeAttempt(ctx context.Context, spec OperationSpec, attempt Attempt) (o
 	return output, "", err
 }
 
-func classifyState(err error, attempt, maximum, exceptions, maxExceptions uint) State {
+func classifyState(err error, retryMode RetryMode, attempt, maximum, exceptions, maxExceptions uint) State {
 	if err == nil {
 		return Succeeded
 	}
@@ -325,11 +338,17 @@ func classifyState(err error, attempt, maximum, exceptions, maxExceptions uint) 
 		return Canceled
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrTimeout):
 		return Failed
-	case errors.Is(err, ErrRetryable) && attempt < maximum && exceptions < maxExceptions:
-		return Retryable
-	default:
+	}
+	if retryMode != DurableRetries {
 		return Failed
 	}
+	if !errors.Is(err, ErrRetryable) {
+		return Failed
+	}
+	if attempt >= maximum || exceptions >= maxExceptions {
+		return Failed
+	}
+	return Retryable
 }
 
 func persistentErrorDetail(err error) string {

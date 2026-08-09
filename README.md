@@ -37,7 +37,8 @@ application authorizer for every administrative action.
 
 Start with the [quickstart](docs/quickstart.md), then read the
 [lifecycle](docs/lifecycle.md), [transaction](docs/transactions.md), and
-[recovery](docs/recovery.md) contracts. All documentation is indexed in
+[recovery](docs/recovery.md) contracts. Kubernetes deployments must also use
+the [fleet operation contract](docs/kubernetes.md). All documentation is indexed in
 [docs/README.md](docs/README.md).
 
 Requires Go 1.26.5. Run `make check` for the complete local gate.

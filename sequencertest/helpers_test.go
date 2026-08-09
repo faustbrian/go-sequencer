@@ -46,6 +46,15 @@ func TestFaultStoreInjectsCrashBoundary(t *testing.T) {
 	}
 }
 
+func TestFaultStoreFailsClosedWithoutLeaseStore(t *testing.T) {
+	t.Parallel()
+
+	store := sequencertest.NewFaultStore(nil, sequencertest.Faults{})
+	if _, err := store.RenewLease(context.Background(), sequencer.Ownership{}, time.Now(), time.Minute); !errors.Is(err, sequencer.ErrInvalidLease) {
+		t.Fatalf("RenewLease() error = %v", err)
+	}
+}
+
 func TestFaultStoreForwardsEveryStoreBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -61,6 +70,9 @@ func TestFaultStoreForwardsEveryStoreBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.MarkRunning(ctx, claim.Ownership(), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RenewLease(ctx, claim.Ownership(), now.Add(time.Second), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Complete(ctx, sequencer.Completion{Ownership: claim.Ownership(), State: sequencer.Succeeded, At: now}); err != nil {
@@ -97,6 +109,7 @@ func TestFaultStoreInjectsEveryConfiguredBoundary(t *testing.T) {
 	cause := errors.New("fault")
 	store := sequencertest.NewFaultStore(memory.New(), sequencertest.Faults{
 		Register: cause, ClaimNext: cause, MarkRunning: cause,
+		RenewLease:     cause,
 		RecoverExpired: cause, Snapshot: cause, History: cause,
 		Audit: cause, Reset: cause,
 	})
@@ -105,6 +118,10 @@ func TestFaultStoreInjectsEveryConfiguredBoundary(t *testing.T) {
 		func() error { _, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{}); return err },
 		func() error {
 			_, err := store.MarkRunning(context.Background(), sequencer.Ownership{}, time.Now())
+			return err
+		},
+		func() error {
+			_, err := store.RenewLease(context.Background(), sequencer.Ownership{}, time.Now(), time.Minute)
 			return err
 		},
 		func() error { _, err := store.RecoverExpired(context.Background(), time.Now()); return err },

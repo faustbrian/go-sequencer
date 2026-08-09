@@ -29,7 +29,11 @@ func TestAdapterUsesExternalBoundedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Do(context.Background(), func(context.Context) error { return nil }); err != nil {
+	budget, err := sequencer.NewExecutionBudget(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Do(context.Background(), budget, func(context.Context) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if policy.calls != 1 {
@@ -45,17 +49,49 @@ func TestAdapterValidationAndPolicyFailure(t *testing.T) {
 	}
 	policy := &policyStub{err: errors.New("budget")}
 	adapter, _ := goretry.New(policy)
-	if err := adapter.Do(context.Background(), nil); !errors.Is(err, goretry.ErrInvalidAdapter) {
+	budget, _ := sequencer.NewExecutionBudget(1)
+	if err := adapter.Do(context.Background(), budget, nil); !errors.Is(err, goretry.ErrInvalidAdapter) {
 		t.Fatalf("Do(nil) error = %v", err)
 	}
-	if err := adapter.Do(context.Background(), func(context.Context) error { return nil }); !errors.Is(err, policy.err) {
+	if err := adapter.Do(context.Background(), budget, func(context.Context) error { return nil }); !errors.Is(err, policy.err) {
 		t.Fatalf("Do() error = %v", err)
+	}
+}
+
+func TestAdapterCannotExceedTheSharedExecutionBudget(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := goretry.New(repeatingPolicy{attempts: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget, err := sequencer.NewExecutionBudget(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	err = adapter.Do(context.Background(), budget, func(context.Context) error {
+		calls++
+		return errors.New("retry")
+	})
+	if !errors.Is(err, sequencer.ErrBudgetExhausted) || calls != 2 || budget.Remaining() != 0 {
+		t.Fatalf("Do() error = %v, calls = %d, remaining = %d", err, calls, budget.Remaining())
 	}
 }
 
 type policyStub struct {
 	calls int
 	err   error
+}
+
+type repeatingPolicy struct{ attempts int }
+
+func (policy repeatingPolicy) Do(ctx context.Context, operation func(context.Context) error) error {
+	var err error
+	for range policy.attempts {
+		err = operation(ctx)
+	}
+	return err
 }
 
 func (policy *policyStub) Do(ctx context.Context, operation func(context.Context) error) error {

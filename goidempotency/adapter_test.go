@@ -42,9 +42,17 @@ func TestAdapterFailureAndValidationPaths(t *testing.T) {
 		t.Fatalf("Do(nil) error = %v", err)
 	}
 	cause := errors.New("unavailable")
-	adapter, _ = goidempotency.New(&gateStub{beginErr: cause})
+	adapter, _ = goidempotency.New(&gateStub{execute: true, beginErr: cause})
 	if err := adapter.Do(context.Background(), "key", func(context.Context) error { return nil }); !errors.Is(err, cause) {
 		t.Fatalf("begin error = %v", err)
+	}
+	called := false
+	adapter, _ = goidempotency.New(&gateStub{})
+	if err := adapter.Do(context.Background(), "key", func(context.Context) error {
+		called = true
+		return nil
+	}); err != nil || called {
+		t.Fatalf("unacquired key error = %v, called = %t", err, called)
 	}
 	execution, failure := errors.New("execution"), errors.New("record failure")
 	adapter, _ = goidempotency.New(&gateStub{execute: true, failErr: failure})

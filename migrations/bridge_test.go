@@ -18,6 +18,9 @@ func TestBridgeAssertsPrerequisiteWithoutOwningHistory(t *testing.T) {
 	if err := bridge.Assert(context.Background(), migrations.Prerequisite{MinimumVersion: 40}); err != nil {
 		t.Fatalf("Assert() error = %v", err)
 	}
+	if err := bridge.Assert(context.Background(), migrations.Prerequisite{MinimumVersion: 42}); err != nil {
+		t.Fatalf("Assert(exact version) error = %v", err)
+	}
 	if err := bridge.Assert(context.Background(), migrations.Prerequisite{MinimumVersion: 43}); !errors.Is(err, migrations.ErrPrerequisiteMissing) {
 		t.Fatalf("Assert() error = %v", err)
 	}

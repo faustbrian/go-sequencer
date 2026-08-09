@@ -68,12 +68,21 @@ func TestHandlerValidationAndFailureResponses(t *testing.T) {
 		status int
 	}{
 		{http.MethodGet, "/unknown", nil, http.StatusNotFound},
+		{http.MethodPut, "/operations/a/reset", nil, http.StatusNotFound},
+		{http.MethodPost, "/other/a/reset", nil, http.StatusNotFound},
+		{http.MethodPost, "/operations/a", nil, http.StatusNotFound},
+		{http.MethodGet, "/operations/?version=1", nil, http.StatusNotFound},
 		{http.MethodGet, "/operations/a/b?version=1", nil, http.StatusNotFound},
 		{http.MethodGet, "/operations/a?version=nope", nil, http.StatusBadRequest},
+		{http.MethodGet, "/operations/a?version=0", nil, http.StatusBadRequest},
 		{http.MethodGet, "/operations/a?version=1", nil, http.StatusNotFound},
 		{http.MethodPost, "/execute", nil, http.StatusConflict},
+		{http.MethodPost, "/operations//reset", nil, http.StatusNotFound},
 		{http.MethodPost, "/operations/a/b/reset", nil, http.StatusNotFound},
 		{http.MethodPost, "/operations/a/reset", []byte(`{"unknown":true}`), http.StatusBadRequest},
+		{http.MethodPost, "/operations/a/reset", []byte(`{"version":0,"actor":"op","reason":"retry"}`), http.StatusBadRequest},
+		{http.MethodPost, "/operations/a/reset", []byte(`{"version":1,"actor":"","reason":"retry"}`), http.StatusBadRequest},
+		{http.MethodPost, "/operations/a/reset", []byte(`{"version":1,"actor":"op","reason":""}`), http.StatusBadRequest},
 		{http.MethodPost, "/operations/a/reset", []byte(`{"version":1,"actor":"op","reason":"retry"}`), http.StatusConflict},
 	}
 	for _, test := range tests {
@@ -96,6 +105,11 @@ func TestHandlerValidationAndFailureResponses(t *testing.T) {
 	denied.ServeHTTP(response, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/operations/a/reset", nil))
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("denied reset status = %d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	denied.ServeHTTP(response, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/operations/a?version=1", nil))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("denied inspect status = %d", response.Code)
 	}
 	writer := &failingWriter{header: make(http.Header)}
 	handler.ServeHTTP(writer, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/operations/a?version=1", nil))

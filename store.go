@@ -36,6 +36,8 @@ var (
 	ErrNotFound = errors.New("sequencer: operation not found")
 	// ErrResetForbidden reports an invalid or unattributed replay request.
 	ErrResetForbidden = errors.New("sequencer: reset forbidden")
+	// ErrInvalidLease reports a non-positive or regressing lease renewal.
+	ErrInvalidLease = errors.New("sequencer: invalid lease renewal")
 )
 
 type classifiedError struct {
@@ -118,10 +120,21 @@ type AuditEvent struct {
 
 // ClaimRequest selects the first eligible operation in deterministic plan order.
 type ClaimRequest struct {
+	// Candidates are the exact definitions present in the claiming binary.
+	Candidates []ClaimCandidate
+	// OperationIDs is retained for callers that do not operate mixed binaries.
+	// Fleet runners use Candidates so an old pod cannot claim a newer version.
 	OperationIDs  []OperationID
 	Owner         string
 	Now           time.Time
 	LeaseDuration time.Duration
+}
+
+// ClaimCandidate pins one locally executable operation definition.
+type ClaimCandidate struct {
+	ID       OperationID
+	Version  uint
+	Checksum string
 }
 
 // Ownership is the proof required for attempt transitions.
@@ -177,13 +190,19 @@ type Store interface {
 	Reset(context.Context, ResetRequest) error
 }
 
+// LeaseStore extends Store with fenced renewal for long-lived attempts.
+// Renewal proves only that ownership is current; it does not prove that an
+// external side effect is still running or can be canceled.
+type LeaseStore interface {
+	Store
+	RenewLease(context.Context, Ownership, time.Time, time.Duration) (time.Time, error)
+}
+
 // SanitizePersistenceText removes control characters and applies a byte bound.
 // Applications should pass pre-redacted summaries; arbitrary errors, payloads,
 // stack traces, and secrets must not be persisted.
 func SanitizePersistenceText(value string, maximum int) string {
-	if maximum <= 0 {
-		return ""
-	}
+	maximum = max(maximum, 0)
 	value = strings.Map(func(character rune) rune {
 		if unicode.IsControl(character) {
 			return ' '
@@ -191,9 +210,6 @@ func SanitizePersistenceText(value string, maximum int) string {
 		return character
 	}, value)
 	value = strings.Join(strings.Fields(value), " ")
-	if len(value) <= maximum && utf8.ValidString(value) {
-		return value
-	}
 	var bounded strings.Builder
 	bounded.Grow(min(len(value), maximum))
 	for _, character := range value {

@@ -93,12 +93,14 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	if got := len(winners); got != 1 {
 		t.Fatalf("claim winners = %d, want 1", got)
 	}
+	winner := <-winners
 	time.Sleep(75 * time.Millisecond)
 	if recovered, err := store.RecoverExpired(ctx, time.Now()); err != nil || recovered != 1 {
 		t.Fatalf("RecoverExpired() = %d, %v", recovered, err)
 	}
 	audit, err := store.Audit(ctx, registration.ID, 1, 20)
-	if err != nil || len(audit) < 3 || audit[len(audit)-2].To != sequencer.Retryable || audit[len(audit)-1].To != sequencer.Eligible {
+	if err != nil || len(audit) < 3 || audit[len(audit)-2].To != sequencer.Retryable || audit[len(audit)-1].To != sequencer.Eligible ||
+		audit[len(audit)-2].Owner != winner.Attempt.Owner || audit[len(audit)-1].Owner != winner.Attempt.Owner {
 		t.Fatalf("recovery audit = %+v, %v", audit, err)
 	}
 	claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
@@ -146,5 +148,30 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	audit, err = store.Audit(ctx, failed.ID, 1, 20)
 	if err != nil || audit[len(audit)-1].From != sequencer.Failed || audit[len(audit)-1].To != sequencer.Eligible {
 		t.Fatalf("reset audit = %+v, %v", audit, err)
+	}
+
+	rolling := []sequencer.Registration{
+		{ID: "rolling", Version: 1, Checksum: "sha256:v1"},
+		{ID: "rolling", Version: 2, Checksum: "sha256:v2"},
+	}
+	if err := store.Register(ctx, rolling, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	oldClaim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: "rolling", Version: 1, Checksum: "sha256:v1"}},
+		Owner:      "old-binary", LeaseDuration: time.Minute,
+	})
+	if err != nil || oldClaim.Attempt.Version != 1 {
+		t.Fatalf("old binary claim = %+v, %v", oldClaim, err)
+	}
+	if _, err := store.MarkRunning(ctx, oldClaim.Ownership(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	until, err := store.RenewLease(ctx, oldClaim.Ownership(), time.Now(), 2*time.Minute)
+	if err != nil || !until.After(time.Now().Add(time.Minute)) {
+		t.Fatalf("RenewLease() = %s, %v", until, err)
+	}
+	if err := store.Complete(ctx, sequencer.Completion{Ownership: oldClaim.Ownership(), State: sequencer.Succeeded}); err != nil {
+		t.Fatal(err)
 	}
 }

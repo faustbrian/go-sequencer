@@ -55,6 +55,9 @@ func TestNewWithCleanupTimeoutRejectsUnboundedDurations(t *testing.T) {
 			t.Fatalf("NewWithCleanupTimeout(%s) error = %v", timeout, err)
 		}
 	}
+	if _, err := goidempotency.NewWithCleanupTimeout(&gateStub{}, goidempotency.MaxCleanupTimeout); err != nil {
+		t.Fatalf("exact maximum cleanup timeout error = %v", err)
+	}
 }
 
 func TestAdapterExecutesOnlyAcquiredKeyAndCompletes(t *testing.T) {
@@ -72,8 +75,8 @@ func TestAdapterExecutesOnlyAcquiredKeyAndCompletes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !called || !gate.completed {
-		t.Fatalf("called = %t, completed = %t", called, gate.completed)
+	if !called || !gate.completed || !gate.completeHadDeadline {
+		t.Fatalf("called = %t, completed = %t, cleanup deadline = %t", called, gate.completed, gate.completeHadDeadline)
 	}
 }
 
@@ -116,18 +119,20 @@ func TestAdapterFailureAndValidationPaths(t *testing.T) {
 }
 
 type gateStub struct {
-	execute     bool
-	completed   bool
-	beginErr    error
-	failErr     error
-	completeErr error
+	execute             bool
+	completed           bool
+	completeHadDeadline bool
+	beginErr            error
+	failErr             error
+	completeErr         error
 }
 
 func (gate *gateStub) Begin(context.Context, string) (goidempotency.Token, bool, error) {
 	return "token", gate.execute, gate.beginErr
 }
-func (gate *gateStub) Complete(context.Context, goidempotency.Token) error {
+func (gate *gateStub) Complete(ctx context.Context, _ goidempotency.Token) error {
 	gate.completed = true
+	_, gate.completeHadDeadline = ctx.Deadline()
 	return gate.completeErr
 }
 func (gate *gateStub) Fail(context.Context, goidempotency.Token, error) error { return gate.failErr }

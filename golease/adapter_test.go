@@ -42,6 +42,9 @@ func TestNewWithCleanupTimeoutRejectsUnboundedDurations(t *testing.T) {
 			t.Fatalf("NewWithCleanupTimeout(%s) error = %v", timeout, err)
 		}
 	}
+	if _, err := golease.NewWithCleanupTimeout(acquirerStub{}, golease.MaxCleanupTimeout); err != nil {
+		t.Fatalf("exact maximum cleanup timeout error = %v", err)
+	}
 }
 
 func TestAdapterPassesFencingProofAndReleases(t *testing.T) {
@@ -60,8 +63,8 @@ func TestAdapterPassesFencingProofAndReleases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !handle.released {
-		t.Fatal("lease was not released")
+	if !handle.released || !handle.releaseHadDeadline {
+		t.Fatalf("released = %t, cleanup deadline = %t", handle.released, handle.releaseHadDeadline)
 	}
 }
 
@@ -110,16 +113,18 @@ func (stub acquirerStub) Acquire(context.Context, string, time.Duration) (goleas
 }
 
 type handleStub struct {
-	owner      string
-	fencing    uint64
-	released   bool
-	releaseErr error
+	owner              string
+	fencing            uint64
+	released           bool
+	releaseHadDeadline bool
+	releaseErr         error
 }
 
 func (handle *handleStub) Owner() string   { return handle.owner }
 func (handle *handleStub) Fencing() uint64 { return handle.fencing }
-func (handle *handleStub) Release(context.Context) error {
+func (handle *handleStub) Release(ctx context.Context) error {
 	handle.released = true
+	_, handle.releaseHadDeadline = ctx.Deadline()
 	return handle.releaseErr
 }
 

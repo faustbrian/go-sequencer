@@ -28,6 +28,56 @@ func TestHandlerRequiresApplicationAuthorization(t *testing.T) {
 	}
 }
 
+func TestHandlerBindsResetActorToAuthorizedPrincipal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		authorizer authorizerStub
+		actor      string
+		status     int
+	}{
+		{name: "matching actor", authorizer: authorizerStub{principal: "operator"}, actor: "operator", status: http.StatusAccepted},
+		{name: "mismatched actor", authorizer: authorizerStub{principal: "operator"}, actor: "attacker", status: http.StatusForbidden},
+		{name: "empty principal", authorizer: authorizerStub{emptyPrincipal: true}, actor: "operator", status: http.StatusForbidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			controller := &controllerStub{}
+			authorizer := test.authorizer
+			authorizer.observed = &authorizationCall{}
+			handler, err := sequencehttp.New(controller, authorizer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequestWithContext(
+				context.Background(),
+				http.MethodPost,
+				"/operations/postal/reset",
+				bytes.NewBufferString(`{"version":1,"actor":"`+test.actor+`","reason":"retry"}`),
+			)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+			if authorizer.observed.action != sequencehttp.ActionReset || authorizer.observed.resource != "postal" {
+				t.Fatalf("authorization = (%q, %q), want (%q, %q)", authorizer.observed.action, authorizer.observed.resource, sequencehttp.ActionReset, "postal")
+			}
+			if test.status == http.StatusAccepted && controller.reset.Actor != "operator" {
+				t.Fatalf("reset actor = %q, want authorized principal", controller.reset.Actor)
+			}
+			if test.status != http.StatusAccepted && controller.reset.OperationID != "" {
+				t.Fatalf("unauthorized reset reached controller: %+v", controller.reset)
+			}
+		})
+	}
+}
+
 func TestHandlerExposesBoundedInspectAndExecuteControls(t *testing.T) {
 	t.Parallel()
 
@@ -162,10 +212,30 @@ func (controller *controllerStub) Reset(_ context.Context, request sequencehttp.
 	return controller.err
 }
 
-type authorizerStub struct{ err error }
+type authorizerStub struct {
+	principal      string
+	emptyPrincipal bool
+	err            error
+	observed       *authorizationCall
+}
 
-func (stub authorizerStub) Authorize(context.Context, sequencehttp.Action, string) error {
-	return stub.err
+type authorizationCall struct {
+	action   sequencehttp.Action
+	resource string
+}
+
+func (stub authorizerStub) Authorize(_ context.Context, action sequencehttp.Action, resource string) (string, error) {
+	if stub.observed != nil {
+		stub.observed.action = action
+		stub.observed.resource = resource
+	}
+	if stub.emptyPrincipal {
+		return "", stub.err
+	}
+	if stub.principal == "" {
+		return "op", stub.err
+	}
+	return stub.principal, stub.err
 }
 
 type failingWriter struct{ header http.Header }

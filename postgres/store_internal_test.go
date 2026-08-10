@@ -122,6 +122,20 @@ func TestStoreRegisterWritesAuditForNewIdentity(t *testing.T) {
 	}
 }
 
+func TestStoreRegisterComparesCanonicalDependencyOrder(t *testing.T) {
+	t.Parallel()
+
+	store := newStore(&fakeDatabase{tx: &fakeTx{
+		rows: []pgx.Row{registrationRow("sum", []string{"b", "a"})},
+	}})
+	if err := store.Register(context.Background(), []sequencer.Registration{{
+		ID: "operation", Version: 1, Checksum: "sum",
+		Dependencies: []sequencer.OperationID{"a", "b"},
+	}}, time.Now()); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+}
+
 func TestStoreClaimTransactionFailures(t *testing.T) {
 	t.Parallel()
 

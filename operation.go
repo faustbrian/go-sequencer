@@ -181,7 +181,7 @@ type Operation struct{ spec OperationSpec }
 // NewOperation validates and freezes a definition.
 func NewOperation(spec OperationSpec) (Operation, error) {
 	if !identifierPattern.MatchString(string(spec.ID)) || spec.Version == 0 ||
-		spec.Checksum == "" || spec.Description == "" || spec.Channel == "" ||
+		spec.Checksum == "" || spec.Description == "" || !identifierPattern.MatchString(spec.Channel) ||
 		spec.Handler == nil || spec.Policy.MaxAttempts == 0 || spec.Policy.MaxExceptions == 0 ||
 		(spec.Policy.Mode != OneTime && spec.Policy.Mode != Repeatable) ||
 		spec.Policy.Cancellation > CancellationDrainOnly ||

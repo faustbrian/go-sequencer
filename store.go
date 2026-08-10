@@ -82,6 +82,7 @@ type Registration struct {
 	ID             OperationID
 	Version        uint
 	Checksum       string
+	Channel        string
 	DependencyRefs []DependencyRef
 	// Dependencies is retained for source compatibility and rejected when non-empty.
 	Dependencies []OperationID
@@ -139,6 +140,7 @@ type ClaimCandidate struct {
 	ID       OperationID
 	Version  uint
 	Checksum string
+	Channel  string
 }
 
 // Ownership is the proof required for attempt transitions.

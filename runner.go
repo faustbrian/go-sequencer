@@ -63,6 +63,7 @@ const (
 type Event struct {
 	Type      EventType
 	Operation OperationID
+	Channel   string
 	Attempt   uint
 	State     State
 	At        time.Time
@@ -84,6 +85,7 @@ func (function ObserverFunc) Observe(event Event) { function(event) }
 type RunnerOptions struct {
 	Owner         string
 	Environment   string
+	Channels      []string
 	Clock         Clock
 	LeaseDuration time.Duration
 	Transactions  TransactionManager
@@ -107,6 +109,7 @@ const (
 type OperationResult struct {
 	OperationID OperationID
 	Version     uint
+	Channel     string
 	Attempts    uint
 	State       State
 	Err         error
@@ -117,6 +120,7 @@ type Report struct {
 	StartedAt  time.Time
 	FinishedAt time.Time
 	Result     RunResult
+	Channels   []string
 	Operations []OperationResult
 }
 
@@ -142,8 +146,27 @@ func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) 
 		options.LeaseDuration = DefaultLeaseDuration
 	}
 	options.Observers = slices.Clone(options.Observers)
+	options.Channels = slices.Clone(options.Channels)
+	slices.Sort(options.Channels)
+	for index, channel := range options.Channels {
+		if !identifierPattern.MatchString(channel) || (index > 0 && channel == options.Channels[index-1]) {
+			return nil, ErrInvalidRunner
+		}
+	}
+	knownChannels := make(map[string]struct{})
+	for _, operation := range plan.operations {
+		knownChannels[operation.spec.Channel] = struct{}{}
+	}
+	for _, channel := range options.Channels {
+		if _, exists := knownChannels[channel]; !exists {
+			return nil, fmt.Errorf("%w: unknown channel %q", ErrInvalidRunner, channel)
+		}
+	}
 	for _, operation := range plan.operations {
 		spec := operation.spec
+		if !runsChannel(options.Channels, spec.Channel) {
+			continue
+		}
 		if len(spec.Environments) > 0 && !slices.Contains(spec.Environments, options.Environment) {
 			return nil, fmt.Errorf("%w: %s", ErrEnvironmentForbidden, spec.ID)
 		}
@@ -162,12 +185,12 @@ func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) 
 
 // Execute runs the immutable plan synchronously under durable ownership.
 func (runner *Runner) Execute(ctx context.Context) (Report, error) {
-	report := Report{StartedAt: runner.options.Clock.Now(), Result: RunSucceeded}
+	report := Report{StartedAt: runner.options.Clock.Now(), Result: RunSucceeded, Channels: runner.reportChannels()}
 	registrations := make([]Registration, 0, len(runner.plan.operations))
 	for _, operation := range runner.plan.operations {
 		registrations = append(registrations, Registration{
 			ID: operation.spec.ID, Version: operation.spec.Version,
-			Checksum:       operation.spec.Checksum,
+			Checksum:       operation.spec.Checksum, Channel: operation.spec.Channel,
 			DependencyRefs: slices.Clone(operation.spec.DependencyRefs),
 		})
 	}
@@ -176,6 +199,9 @@ func (runner *Runner) Execute(ctx context.Context) (Report, error) {
 	}
 
 	for _, operation := range runner.plan.operations {
+		if !runsChannel(runner.options.Channels, operation.spec.Channel) {
+			continue
+		}
 		result, err := runner.executeOperation(ctx, operation)
 		report.Operations = append(report.Operations, result)
 		if err == nil {
@@ -195,7 +221,7 @@ func (runner *Runner) Execute(ctx context.Context) (Report, error) {
 
 func (runner *Runner) executeOperation(ctx context.Context, operation Operation) (OperationResult, error) {
 	spec := operation.spec
-	result := OperationResult{OperationID: spec.ID, Version: spec.Version}
+	result := OperationResult{OperationID: spec.ID, Version: spec.Version, Channel: spec.Channel}
 	if record, err := runner.store.Snapshot(ctx, spec.ID, spec.Version); err == nil {
 		if record.State == Skipped || (record.State == Succeeded && spec.Policy.Mode == OneTime) {
 			result.State = record.State
@@ -207,7 +233,7 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 	for attemptsThisRun := uint(1); ; attemptsThisRun = nextAttempt(attemptsThisRun) {
 		now := runner.options.Clock.Now()
 		claim, err := runner.store.ClaimNext(ctx, ClaimRequest{
-			Candidates: []ClaimCandidate{{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum}}, Owner: runner.options.Owner,
+			Candidates: []ClaimCandidate{{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel}}, Owner: runner.options.Owner,
 			Now: now, LeaseDuration: runner.options.LeaseDuration,
 		})
 		if err != nil {
@@ -215,12 +241,12 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 			return result, err
 		}
 		result.Attempts = claim.Attempt.Number
-		runner.observe(Event{Type: EventClaimed, Operation: spec.ID, Attempt: claim.Attempt.Number, State: Claimed, At: now})
+		runner.observe(Event{Type: EventClaimed, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: Claimed, At: now})
 		if _, err := runner.store.MarkRunning(ctx, claim.Ownership(), now); err != nil {
 			result.Err = err
 			return result, err
 		}
-		runner.observe(Event{Type: EventRunning, Operation: spec.ID, Attempt: claim.Attempt.Number, State: Running, At: now})
+		runner.observe(Event{Type: EventRunning, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: Running, At: now})
 
 		output, actor, reason, executionErr := runner.runAttempt(ctx, spec, claim.Attempt)
 		if errors.Is(executionErr, ErrRetryable) {
@@ -243,7 +269,7 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 			return result, err
 		}
 		result.State, result.Err = state, executionErr
-		runner.observe(Event{Type: EventCompleted, Operation: spec.ID, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
+		runner.observe(Event{Type: EventCompleted, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
 		if state == Retryable {
 			continue
 		}

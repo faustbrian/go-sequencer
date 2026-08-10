@@ -3,6 +3,7 @@ package sequencer_test
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	sequencer "github.com/faustbrian/golib/pkg/sequencer"
@@ -30,6 +31,58 @@ func TestCompilePlanUsesDeterministicTopologicalOrder(t *testing.T) {
 	if plan.IDs()[0] != "audit" {
 		t.Fatal("plan IDs are mutable")
 	}
+}
+
+func TestCompilePlanOrderIsInvariantAcrossEquivalentInputPermutations(t *testing.T) {
+	t.Parallel()
+
+	rootA := validSpec("root-a")
+	rootB := validSpec("root-b")
+	join := validSpec("join")
+	join.Dependencies = []sequencer.OperationID{"root-b", "root-a"}
+	side := validSpec("side")
+	side.Dependencies = []sequencer.OperationID{"root-a"}
+	tail := validSpec("tail")
+	tail.Dependencies = []sequencer.OperationID{"root-b", "join"}
+	want := []sequencer.OperationID{"root-a", "root-b", "join", "side", "tail"}
+
+	for _, specs := range operationSpecPermutations([]sequencer.OperationSpec{tail, side, join, rootB, rootA}) {
+		for dependencyOrder := 0; dependencyOrder < 4; dependencyOrder++ {
+			candidate := slices.Clone(specs)
+			for index := range candidate {
+				candidate[index].Dependencies = slices.Clone(candidate[index].Dependencies)
+				if (candidate[index].ID == "join" && dependencyOrder&1 != 0) ||
+					(candidate[index].ID == "tail" && dependencyOrder&2 != 0) {
+					slices.Reverse(candidate[index].Dependencies)
+				}
+			}
+			plan, err := sequencer.CompilePlan(candidate, sequencer.PlanOptions{})
+			if err != nil {
+				t.Fatalf("CompilePlan() error = %v", err)
+			}
+			if got := plan.IDs(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("IDs() = %v, want %v", got, want)
+			}
+		}
+	}
+}
+
+func operationSpecPermutations(specs []sequencer.OperationSpec) [][]sequencer.OperationSpec {
+	var permutations [][]sequencer.OperationSpec
+	var visit func(int)
+	visit = func(index int) {
+		if index == len(specs) {
+			permutations = append(permutations, slices.Clone(specs))
+			return
+		}
+		for candidate := index; candidate < len(specs); candidate++ {
+			specs[index], specs[candidate] = specs[candidate], specs[index]
+			visit(index + 1)
+			specs[index], specs[candidate] = specs[candidate], specs[index]
+		}
+	}
+	visit(0)
+	return permutations
 }
 
 func TestCompilePlanRejectsBrokenGraphs(t *testing.T) {

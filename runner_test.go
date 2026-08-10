@@ -55,6 +55,37 @@ func TestRunnerExecutesPlanInOrderAndReportsDurableResults(t *testing.T) {
 	}
 }
 
+func TestRunnerTreatsPersistedOneTimeSkipAsComplete(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("conditional-skip")
+	evaluations := 0
+	spec.Condition = sequencer.ConditionFunc(func(context.Context, sequencer.Attempt) (sequencer.Decision, error) {
+		evaluations++
+		return sequencer.Decision{Run: false, Reason: "already satisfied"}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runner.Execute(context.Background())
+	if err != nil || first.Operations[0].State != sequencer.Skipped {
+		t.Fatalf("first Execute() = %+v, %v", first, err)
+	}
+	second, err := runner.Execute(context.Background())
+	if err != nil || second.Result != sequencer.RunSucceeded || len(second.Operations) != 1 ||
+		second.Operations[0].State != sequencer.Skipped || second.Operations[0].Attempts != 1 {
+		t.Fatalf("second Execute() = %+v, %v", second, err)
+	}
+	if evaluations != 1 {
+		t.Fatalf("condition evaluations = %d, want 1", evaluations)
+	}
+}
+
 func TestRunnerRetriesTypedFailuresWithinBudget(t *testing.T) {
 	t.Parallel()
 

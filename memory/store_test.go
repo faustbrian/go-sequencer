@@ -268,6 +268,38 @@ func TestStoreValidatesRegistrationAndContinuesAfterExistingIdentity(t *testing.
 	}
 }
 
+func TestStoreRegistrationIsAtomicAndRejectsDependencyDrift(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	store := memory.New()
+	if err := store.Register(ctx, []sequencer.Registration{
+		{ID: "dependency-a", Version: 1, Checksum: "sha256:a"},
+		{ID: "dependency-b", Version: 1, Checksum: "sha256:b"},
+		{ID: "existing", Version: 1, Checksum: "sha256:existing", Dependencies: []sequencer.OperationID{"dependency-a"}},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	err := store.Register(ctx, []sequencer.Registration{
+		{ID: "must-not-persist", Version: 1, Checksum: "sha256:new"},
+		{ID: "existing", Version: 1, Checksum: "sha256:existing", Dependencies: []sequencer.OperationID{"dependency-b"}},
+	}, now.Add(time.Minute))
+	if !errors.Is(err, sequencer.ErrDefinitionDrift) {
+		t.Fatalf("Register(dependency drift) error = %v", err)
+	}
+	if _, err := store.Snapshot(ctx, "must-not-persist", 1); !errors.Is(err, sequencer.ErrNotFound) {
+		t.Fatalf("partial registration persisted: %v", err)
+	}
+
+	if err := store.Register(ctx, []sequencer.Registration{
+		{ID: "existing", Version: 1, Checksum: "sha256:existing", Dependencies: []sequencer.OperationID{"dependency-a"}},
+	}, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("Register(same dependencies) error = %v", err)
+	}
+}
+
 func TestStoreValidatesClaimFieldsIndependentlyAndSkipsIneligibleCandidates(t *testing.T) {
 	t.Parallel()
 

@@ -4,9 +4,56 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/faustbrian/golib/pkg/sequencer/goidempotency"
 )
+
+func TestAdapterBoundsDetachedCleanupAfterCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	const cleanupTimeout = 20 * time.Millisecond
+	tests := []struct {
+		name      string
+		execution error
+	}{
+		{name: "complete"},
+		{name: "fail", execution: errors.New("execution")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gate := &blockingCleanupGate{execute: true}
+			adapter, err := goidempotency.NewWithCleanupTimeout(gate, cleanupTimeout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			err = adapter.Do(ctx, "key", func(context.Context) error {
+				cancel()
+				return test.execution
+			})
+			if !gate.hadDeadline {
+				t.Fatal("cleanup context had no deadline")
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("cleanup error = %v, want deadline exceeded", err)
+			}
+			if test.execution != nil && !errors.Is(err, test.execution) {
+				t.Fatalf("cleanup error = %v, want joined execution error", err)
+			}
+		})
+	}
+}
+
+func TestNewWithCleanupTimeoutRejectsUnboundedDurations(t *testing.T) {
+	t.Parallel()
+
+	for _, timeout := range []time.Duration{-time.Nanosecond, 0, goidempotency.MaxCleanupTimeout + time.Nanosecond} {
+		if _, err := goidempotency.NewWithCleanupTimeout(&gateStub{}, timeout); !errors.Is(err, goidempotency.ErrInvalidAdapter) {
+			t.Fatalf("NewWithCleanupTimeout(%s) error = %v", timeout, err)
+		}
+	}
+}
 
 func TestAdapterExecutesOnlyAcquiredKeyAndCompletes(t *testing.T) {
 	t.Parallel()
@@ -82,3 +129,26 @@ func (gate *gateStub) Complete(context.Context, goidempotency.Token) error {
 	return gate.completeErr
 }
 func (gate *gateStub) Fail(context.Context, goidempotency.Token, error) error { return gate.failErr }
+
+type blockingCleanupGate struct {
+	execute     bool
+	hadDeadline bool
+}
+
+func (gate *blockingCleanupGate) Begin(context.Context, string) (goidempotency.Token, bool, error) {
+	return "token", gate.execute, nil
+}
+
+func (gate *blockingCleanupGate) Complete(ctx context.Context, _ goidempotency.Token) error {
+	return gate.block(ctx)
+}
+
+func (gate *blockingCleanupGate) Fail(ctx context.Context, _ goidempotency.Token, _ error) error {
+	return gate.block(ctx)
+}
+
+func (gate *blockingCleanupGate) block(ctx context.Context) error {
+	_, gate.hadDeadline = ctx.Deadline()
+	<-ctx.Done()
+	return ctx.Err()
+}

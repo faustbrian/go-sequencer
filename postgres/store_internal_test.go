@@ -352,7 +352,7 @@ func TestStoreResetTransactionFailures(t *testing.T) {
 		{"scan", &fakeTx{rows: []pgx.Row{scriptedRow{err: cause}}}, cause},
 		{"state", &fakeTx{rows: []pgx.Row{resetRow("invalid")}}, cause},
 		{"audit", &fakeTx{rows: []pgx.Row{success}, execErrs: []error{cause}}, cause},
-		{"commit", &fakeTx{rows: []pgx.Row{success}, execErrs: []error{nil}, commitErr: cause}, cause},
+		{"commit", &fakeTx{rows: []pgx.Row{success}, execErrs: []error{nil}, commitErr: cause}, sequencer.ErrUnknownResult},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

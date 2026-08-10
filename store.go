@@ -30,6 +30,8 @@ var (
 	ErrRollback = errors.New("sequencer: rollback failure")
 	// ErrChecksumDrift reports changed code for an existing version.
 	ErrChecksumDrift = errors.New("sequencer: checksum drift")
+	// ErrDefinitionDrift reports changed durable metadata for an existing version.
+	ErrDefinitionDrift = errors.New("sequencer: definition drift")
 	// ErrNoEligibleOperation reports that no dependency-ready work exists.
 	ErrNoEligibleOperation = errors.New("sequencer: no eligible operation")
 	// ErrNotFound reports an unknown operation version.

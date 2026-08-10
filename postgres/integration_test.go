@@ -54,6 +54,17 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	if err := store.Register(ctx, []sequencer.Registration{{ID: "schema", Version: 1, Checksum: "sha256:schema"}}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	registrationAudit, err := store.Audit(ctx, "schema", 1, 10)
+	if err != nil || len(registrationAudit) != 1 || registrationAudit[0].From != sequencer.Pending || registrationAudit[0].To != sequencer.Eligible {
+		t.Fatalf("registration audit = %+v, %v", registrationAudit, err)
+	}
+	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates:    []sequencer.ClaimCandidate{{ID: "schema", Version: 1, Checksum: "sha256:wrong"}},
+		Owner:         "wrong-binary",
+		LeaseDuration: time.Minute,
+	}); !errors.Is(err, sequencer.ErrChecksumDrift) {
+		t.Fatalf("checksum-mismatched ClaimNext() error = %v", err)
+	}
 	schemaClaim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{OperationIDs: []sequencer.OperationID{"schema"}, Owner: "schema", LeaseDuration: time.Minute})
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +80,41 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	}
 	if err := store.Register(ctx, []sequencer.Registration{{ID: registration.ID, Version: 1, Checksum: "sha256:drift"}}, time.Now()); !errors.Is(err, sequencer.ErrChecksumDrift) {
 		t.Fatalf("checksum drift error = %v", err)
+	}
+
+	for _, source := range []sequencer.State{sequencer.Retryable, sequencer.Deferred} {
+		id := sequencer.OperationID("claim." + source.String())
+		if err := store.Register(ctx, []sequencer.Registration{{ID: id, Version: 1, Checksum: "sha256:" + source.String()}}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		first, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+			Candidates: []sequencer.ClaimCandidate{{ID: id, Version: 1, Checksum: "sha256:" + source.String()}},
+			Owner: "first", LeaseDuration: time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.MarkRunning(ctx, first.Ownership(), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Complete(ctx, sequencer.Completion{Ownership: first.Ownership(), State: source, EligibleAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+			Candidates: []sequencer.ClaimCandidate{{ID: id, Version: 1, Checksum: "sha256:" + source.String()}},
+			Owner: "second", LeaseDuration: time.Minute,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		events, err := store.Audit(ctx, id, 1, 10)
+		if err != nil || len(events) < 6 {
+			t.Fatalf("%s claim audit = %+v, %v", source, events, err)
+		}
+		last := events[len(events)-2:]
+		if last[0].From != source || last[0].To != sequencer.Eligible ||
+			last[1].From != sequencer.Eligible || last[1].To != sequencer.Claimed {
+			t.Fatalf("%s claim edges = %+v", source, last)
+		}
 	}
 
 	var wait sync.WaitGroup

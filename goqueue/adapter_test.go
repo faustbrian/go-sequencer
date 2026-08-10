@@ -31,6 +31,26 @@ func TestDispatcherPublishesIdentityOnlyMessage(t *testing.T) {
 	}
 }
 
+func TestDispatcherPreservesDeliveryIdentityWhenPublishOutcomeIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("publish acknowledgement lost")
+	publisher := &publisherStub{err: cause}
+	dispatcher, err := goqueue.NewDispatcher(publisher, "deployments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := dispatcher.Dispatch(context.Background(), goqueue.Request{
+		OperationID: "postal.backfill", Version: 2, Checksum: "sha256:abc",
+	})
+	if !errors.Is(err, goqueue.ErrPublishOutcomeUnknown) || !errors.Is(err, cause) {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if message.DeliveryID == "" || message != publisher.message {
+		t.Fatalf("Dispatch() message = %+v, published = %+v", message, publisher.message)
+	}
+}
+
 func TestWorkerDelegatesRedeliveryToDurableExecutor(t *testing.T) {
 	t.Parallel()
 
@@ -45,6 +65,70 @@ func TestWorkerDelegatesRedeliveryToDurableExecutor(t *testing.T) {
 	}
 	if executor.message != message {
 		t.Fatalf("executor message = %+v", executor.message)
+	}
+}
+
+func TestWorkerSettlesOnlyConfirmedExecutionOutcomes(t *testing.T) {
+	t.Parallel()
+
+	message := goqueue.Message{OperationID: "a", Version: 1, Checksum: "sha256:a", DeliveryID: "delivery"}
+	tests := []struct {
+		name            string
+		executionErr    error
+		wantDisposition goqueue.Disposition
+		wantAck         bool
+		wantReject      bool
+	}{
+		{name: "confirmed completion", wantDisposition: goqueue.Acknowledged, wantAck: true},
+		{name: "definite failure", executionErr: sequencer.Permanent(errors.New("invalid")), wantDisposition: goqueue.Rejected, wantReject: true},
+		{name: "commit unknown", executionErr: sequencer.UnknownResult(errors.New("commit response lost")), wantDisposition: goqueue.Unsettled},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &executorStub{err: test.executionErr}
+			settlement := &settlementStub{}
+			worker, err := goqueue.NewWorker(executor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			disposition, err := worker.HandleDelivery(context.Background(), message, settlement)
+			if disposition != test.wantDisposition || !errors.Is(err, test.executionErr) {
+				t.Fatalf("HandleDelivery() = %v, %v", disposition, err)
+			}
+			if settlement.acknowledged != test.wantAck || settlement.rejected != test.wantReject {
+				t.Fatalf("settlement = acknowledged:%t rejected:%t", settlement.acknowledged, settlement.rejected)
+			}
+			if test.wantReject && !errors.Is(settlement.cause, test.executionErr) {
+				t.Fatalf("rejection cause = %v", settlement.cause)
+			}
+		})
+	}
+}
+
+func TestWorkerLeavesDeliveryUnsettledWhenSettlementCannotBeConfirmed(t *testing.T) {
+	t.Parallel()
+
+	message := goqueue.Message{OperationID: "a", Version: 1, Checksum: "sha256:a", DeliveryID: "delivery"}
+	settlementErr := errors.New("settlement unavailable")
+	tests := []struct {
+		name         string
+		executionErr error
+		settlement   *settlementStub
+	}{
+		{name: "acknowledgement", settlement: &settlementStub{ackErr: settlementErr}},
+		{name: "rejection", executionErr: sequencer.Permanent(errors.New("invalid")), settlement: &settlementStub{rejectErr: settlementErr}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			worker, err := goqueue.NewWorker(&executorStub{err: test.executionErr})
+			if err != nil {
+				t.Fatal(err)
+			}
+			disposition, err := worker.HandleDelivery(context.Background(), message, test.settlement)
+			if disposition != goqueue.Unsettled || !errors.Is(err, settlementErr) || !errors.Is(err, test.executionErr) {
+				t.Fatalf("HandleDelivery() = %v, %v", disposition, err)
+			}
+		})
 	}
 }
 
@@ -144,6 +228,25 @@ func (publisher *publisherStub) Publish(_ context.Context, topic string, message
 type executorStub struct {
 	message goqueue.Message
 	err     error
+}
+
+type settlementStub struct {
+	acknowledged bool
+	rejected     bool
+	cause        error
+	ackErr       error
+	rejectErr    error
+}
+
+func (settlement *settlementStub) Acknowledge(context.Context) error {
+	settlement.acknowledged = true
+	return settlement.ackErr
+}
+
+func (settlement *settlementStub) Reject(_ context.Context, cause error) error {
+	settlement.rejected = true
+	settlement.cause = cause
+	return settlement.rejectErr
 }
 
 type ledgerExecutor struct {

@@ -197,12 +197,10 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 	spec := operation.spec
 	result := OperationResult{OperationID: spec.ID, Version: spec.Version}
 	if record, err := runner.store.Snapshot(ctx, spec.ID, spec.Version); err == nil {
-		if record.State == Succeeded {
-			if spec.Policy.Mode == OneTime {
-				result.State = Succeeded
-				result.Attempts = record.AttemptNumber
-				return result, nil
-			}
+		if record.State == Skipped || (record.State == Succeeded && spec.Policy.Mode == OneTime) {
+			result.State = record.State
+			result.Attempts = record.AttemptNumber
+			return result, nil
 		}
 	}
 	exceptions := uint(0)

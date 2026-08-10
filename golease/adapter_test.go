@@ -9,6 +9,39 @@ import (
 	"github.com/faustbrian/golib/pkg/sequencer/golease"
 )
 
+func TestAdapterBoundsDetachedReleaseAfterCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	const cleanupTimeout = 20 * time.Millisecond
+	execution := errors.New("execution")
+	handle := &blockingHandle{owner: "owner", fencing: 1}
+	adapter, err := golease.NewWithCleanupTimeout(acquirerStub{handle: handle}, cleanupTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = adapter.WithClaim(ctx, "key", time.Second, func(context.Context, golease.Ownership) error {
+		cancel()
+		return execution
+	})
+	if !handle.hadDeadline {
+		t.Fatal("release context had no deadline")
+	}
+	if !errors.Is(err, execution) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("joined error = %v", err)
+	}
+}
+
+func TestNewWithCleanupTimeoutRejectsUnboundedDurations(t *testing.T) {
+	t.Parallel()
+
+	for _, timeout := range []time.Duration{-time.Nanosecond, 0, golease.MaxCleanupTimeout + time.Nanosecond} {
+		if _, err := golease.NewWithCleanupTimeout(acquirerStub{}, timeout); !errors.Is(err, golease.ErrInvalidAdapter) {
+			t.Fatalf("NewWithCleanupTimeout(%s) error = %v", timeout, err)
+		}
+	}
+}
+
 func TestAdapterPassesFencingProofAndReleases(t *testing.T) {
 	t.Parallel()
 
@@ -86,4 +119,18 @@ func (handle *handleStub) Fencing() uint64 { return handle.fencing }
 func (handle *handleStub) Release(context.Context) error {
 	handle.released = true
 	return handle.releaseErr
+}
+
+type blockingHandle struct {
+	owner       string
+	fencing     uint64
+	hadDeadline bool
+}
+
+func (handle *blockingHandle) Owner() string   { return handle.owner }
+func (handle *blockingHandle) Fencing() uint64 { return handle.fencing }
+func (handle *blockingHandle) Release(ctx context.Context) error {
+	_, handle.hadDeadline = ctx.Deadline()
+	<-ctx.Done()
+	return ctx.Err()
 }

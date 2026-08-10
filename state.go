@@ -56,12 +56,12 @@ func (state State) String() string {
 var transitions = map[State]map[State]struct{}{
 	Pending:   set(Eligible, Deferred, Skipped, Blocked, Canceled),
 	Eligible:  set(Claimed, Deferred, Skipped, Blocked, Canceled),
-	Claimed:   set(Running, Eligible, Failed, Canceled),
+	Claimed:   set(Running, Eligible, Retryable, Failed, Canceled),
 	Running:   set(Succeeded, Skipped, Failed, Retryable, Deferred, Blocked, Canceled),
 	Retryable: set(Eligible, Failed, Canceled),
 	Deferred:  set(Eligible, Canceled),
 	Failed:    set(Eligible, RolledBack),
-	Succeeded: set(RolledBack),
+	Succeeded: set(Eligible, RolledBack),
 	Blocked:   set(Eligible, Canceled),
 }
 

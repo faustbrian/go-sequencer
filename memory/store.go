@@ -43,20 +43,43 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if now.IsZero() {
+		return sequencer.ErrInvalidOperation
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	normalized := make(map[key]sequencer.Registration, len(registrations))
 	for _, registration := range registrations {
 		if registration.ID == "" || registration.Version == 0 || registration.Checksum == "" {
 			return sequencer.ErrInvalidOperation
 		}
+		registration.Dependencies = slices.Clone(registration.Dependencies)
+		slices.Sort(registration.Dependencies)
+		for index, dependency := range registration.Dependencies {
+			if dependency == "" || dependency == registration.ID ||
+				(index > 0 && dependency == registration.Dependencies[index-1]) {
+				return sequencer.ErrInvalidOperation
+			}
+		}
 		identifier := key{registration.ID, registration.Version}
+		if pending, exists := normalized[identifier]; exists {
+			if pending.Checksum != registration.Checksum || !slices.Equal(pending.Dependencies, registration.Dependencies) {
+				return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
+			}
+			continue
+		}
 		if current, exists := store.entries[identifier]; exists {
 			if current.record.Checksum != registration.Checksum {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, registration.ID, registration.Version)
 			}
+			if !slices.Equal(current.record.Dependencies, registration.Dependencies) {
+				return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
+			}
 			continue
 		}
-		registration.Dependencies = slices.Clone(registration.Dependencies)
+		normalized[identifier] = registration
+	}
+	for identifier, registration := range normalized {
 		store.entries[identifier] = &entry{record: sequencer.Record{
 			Registration: registration, State: sequencer.Eligible,
 			EligibleAt: now, UpdatedAt: now,

@@ -18,7 +18,8 @@ func TestPlanPropertyDependenciesAlwaysPrecedeDependents(t *testing.T) {
 		for index := range count {
 			specs[index] = fuzzSpec(index)
 			if index > 0 && random.IntN(2) == 1 {
-				specs[index].Dependencies = []sequencer.OperationID{specs[random.IntN(index)].ID}
+				dependency := specs[random.IntN(index)]
+				specs[index].DependencyRefs = []sequencer.DependencyRef{{ID: dependency.ID, Version: dependency.Version, Checksum: dependency.Checksum}}
 			}
 		}
 		plan, err := sequencer.CompilePlan(specs, sequencer.PlanOptions{})
@@ -30,9 +31,9 @@ func TestPlanPropertyDependenciesAlwaysPrecedeDependents(t *testing.T) {
 			positions[id] = index
 		}
 		for _, spec := range specs {
-			for _, dependency := range spec.Dependencies {
-				if positions[dependency] >= positions[spec.ID] {
-					t.Fatalf("seed %d: %s does not precede %s", seed, dependency, spec.ID)
+			for _, dependency := range spec.DependencyRefs {
+				if positions[dependency.ID] >= positions[spec.ID] {
+					t.Fatalf("seed %d: %s does not precede %s", seed, dependency.ID, spec.ID)
 				}
 			}
 		}

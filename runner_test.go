@@ -23,7 +23,9 @@ func TestRunnerExecutesPlanInOrderAndReportsDurableResults(t *testing.T) {
 	var executed []sequencer.OperationID
 	operation := func(id sequencer.OperationID, dependencies ...sequencer.OperationID) sequencer.OperationSpec {
 		spec := validSpec(id)
-		spec.Dependencies = dependencies
+		for _, dependency := range dependencies {
+			spec.DependencyRefs = append(spec.DependencyRefs, sequencer.DependencyRef{ID: dependency, Version: 1, Checksum: "sha256:0123456789abcdef"})
+		}
 		spec.Handler = sequencer.HandlerFunc(func(_ context.Context, attempt sequencer.Attempt) (sequencer.Output, error) {
 			mu.Lock()
 			defer mu.Unlock()

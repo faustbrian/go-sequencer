@@ -13,9 +13,9 @@ func TestCompilePlanUsesDeterministicTopologicalOrder(t *testing.T) {
 	t.Parallel()
 
 	postal := validSpec("postal")
-	postal.Dependencies = []sequencer.OperationID{"locations"}
+	postal.DependencyRefs = []sequencer.DependencyRef{referenceTo(validSpec("locations"))}
 	locations := validSpec("locations")
-	locations.Dependencies = []sequencer.OperationID{"countries"}
+	locations.DependencyRefs = []sequencer.DependencyRef{referenceTo(validSpec("countries"))}
 	countries := validSpec("countries")
 	audit := validSpec("audit")
 
@@ -39,21 +39,21 @@ func TestCompilePlanOrderIsInvariantAcrossEquivalentInputPermutations(t *testing
 	rootA := validSpec("root-a")
 	rootB := validSpec("root-b")
 	join := validSpec("join")
-	join.Dependencies = []sequencer.OperationID{"root-b", "root-a"}
+	join.DependencyRefs = []sequencer.DependencyRef{referenceTo(rootB), referenceTo(rootA)}
 	side := validSpec("side")
-	side.Dependencies = []sequencer.OperationID{"root-a"}
+	side.DependencyRefs = []sequencer.DependencyRef{referenceTo(rootA)}
 	tail := validSpec("tail")
-	tail.Dependencies = []sequencer.OperationID{"root-b", "join"}
+	tail.DependencyRefs = []sequencer.DependencyRef{referenceTo(rootB), referenceTo(join)}
 	want := []sequencer.OperationID{"root-a", "root-b", "join", "side", "tail"}
 
 	for _, specs := range operationSpecPermutations([]sequencer.OperationSpec{tail, side, join, rootB, rootA}) {
 		for dependencyOrder := 0; dependencyOrder < 4; dependencyOrder++ {
 			candidate := slices.Clone(specs)
 			for index := range candidate {
-				candidate[index].Dependencies = slices.Clone(candidate[index].Dependencies)
+				candidate[index].DependencyRefs = slices.Clone(candidate[index].DependencyRefs)
 				if (candidate[index].ID == "join" && dependencyOrder&1 != 0) ||
 					(candidate[index].ID == "tail" && dependencyOrder&2 != 0) {
-					slices.Reverse(candidate[index].Dependencies)
+					slices.Reverse(candidate[index].DependencyRefs)
 				}
 			}
 			plan, err := sequencer.CompilePlan(candidate, sequencer.PlanOptions{})
@@ -90,7 +90,7 @@ func TestCompilePlanRejectsBrokenGraphs(t *testing.T) {
 
 	t.Run("missing dependency", func(t *testing.T) {
 		a := validSpec("a")
-		a.Dependencies = []sequencer.OperationID{"missing"}
+		a.DependencyRefs = []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: "sum"}}
 		_, err := sequencer.CompilePlan([]sequencer.OperationSpec{a}, sequencer.PlanOptions{})
 		if !errors.Is(err, sequencer.ErrMissingDependency) {
 			t.Fatalf("error = %v, want ErrMissingDependency", err)
@@ -99,8 +99,8 @@ func TestCompilePlanRejectsBrokenGraphs(t *testing.T) {
 
 	t.Run("cycle", func(t *testing.T) {
 		a, b := validSpec("a"), validSpec("b")
-		a.Dependencies = []sequencer.OperationID{"b"}
-		b.Dependencies = []sequencer.OperationID{"a"}
+		a.DependencyRefs = []sequencer.DependencyRef{referenceTo(b)}
+		b.DependencyRefs = []sequencer.DependencyRef{referenceTo(a)}
 		_, err := sequencer.CompilePlan([]sequencer.OperationSpec{a, b}, sequencer.PlanOptions{})
 		if !errors.Is(err, sequencer.ErrDependencyCycle) {
 			t.Fatalf("error = %v, want ErrDependencyCycle", err)
@@ -162,7 +162,7 @@ func TestCompilePlanEnforcesBounds(t *testing.T) {
 		t.Fatalf("invalid operation error = %v", err)
 	}
 	a, b := validSpec("a"), validSpec("b")
-	b.Dependencies = []sequencer.OperationID{"a"}
+	b.DependencyRefs = []sequencer.DependencyRef{referenceTo(a)}
 	_, err = sequencer.CompilePlan([]sequencer.OperationSpec{a, b}, sequencer.PlanOptions{MaxDepth: 1})
 	if !errors.Is(err, sequencer.ErrResourceLimit) {
 		t.Fatalf("depth error = %v", err)
@@ -170,6 +170,10 @@ func TestCompilePlanEnforcesBounds(t *testing.T) {
 	if _, err := sequencer.CompilePlan([]sequencer.OperationSpec{a, b}, sequencer.PlanOptions{MaxDepth: 2}); err != nil {
 		t.Fatalf("exact depth limit error = %v", err)
 	}
+}
+
+func referenceTo(spec sequencer.OperationSpec) sequencer.DependencyRef {
+	return sequencer.DependencyRef{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum}
 }
 
 func TestPlanReturnsDefensiveOperationsAndLookup(t *testing.T) {

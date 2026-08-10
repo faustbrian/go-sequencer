@@ -277,14 +277,14 @@ func TestStoreRegistrationIsAtomicAndRejectsDependencyDrift(t *testing.T) {
 	if err := store.Register(ctx, []sequencer.Registration{
 		{ID: "dependency-a", Version: 1, Checksum: "sha256:a"},
 		{ID: "dependency-b", Version: 1, Checksum: "sha256:b"},
-		{ID: "existing", Version: 1, Checksum: "sha256:existing", Dependencies: []sequencer.OperationID{"dependency-a"}},
+		{ID: "existing", Version: 1, Checksum: "sha256:existing", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-a", Version: 1, Checksum: "sha256:a"}}},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
 
 	err := store.Register(ctx, []sequencer.Registration{
 		{ID: "must-not-persist", Version: 1, Checksum: "sha256:new"},
-		{ID: "existing", Version: 1, Checksum: "sha256:existing", Dependencies: []sequencer.OperationID{"dependency-b"}},
+		{ID: "existing", Version: 1, Checksum: "sha256:existing", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-b", Version: 1, Checksum: "sha256:b"}}},
 	}, now.Add(time.Minute))
 	if !errors.Is(err, sequencer.ErrDefinitionDrift) {
 		t.Fatalf("Register(dependency drift) error = %v", err)
@@ -294,7 +294,7 @@ func TestStoreRegistrationIsAtomicAndRejectsDependencyDrift(t *testing.T) {
 	}
 
 	if err := store.Register(ctx, []sequencer.Registration{
-		{ID: "existing", Version: 1, Checksum: "sha256:existing", Dependencies: []sequencer.OperationID{"dependency-a"}},
+		{ID: "existing", Version: 1, Checksum: "sha256:existing", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-a", Version: 1, Checksum: "sha256:a"}}},
 	}, now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("Register(same dependencies) error = %v", err)
 	}
@@ -379,7 +379,7 @@ func TestStoreValidatesClaimFieldsIndependentlyAndSkipsIneligibleCandidates(t *t
 	}
 
 	if err := store.Register(ctx, []sequencer.Registration{
-		{ID: "blocked", Version: 1, Checksum: "sha256:blocked", Dependencies: []sequencer.OperationID{"missing"}},
+		{ID: "blocked", Version: 1, Checksum: "sha256:blocked", DependencyRefs: []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: "sha256:missing"}}},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -511,11 +511,11 @@ func TestStoreHistoryAuditResetAndDependenciesEnforceExactBounds(t *testing.T) {
 	if err := store.Register(ctx, []sequencer.Registration{
 		{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"},
 		{ID: "dependency", Version: 2, Checksum: "sha256:dependency-v2"},
-		{ID: "dependent", Version: 1, Checksum: "sha256:dependent", Dependencies: []sequencer.OperationID{"dependency"}},
+		{ID: "dependent", Version: 1, Checksum: "sha256:dependent", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"}}},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
-	dependency, err := store.ClaimNext(ctx, sequencer.ClaimRequest{Candidates: []sequencer.ClaimCandidate{{ID: "dependency", Version: 2}}, Owner: "owner", Now: now, LeaseDuration: time.Second})
+	dependency, err := store.ClaimNext(ctx, sequencer.ClaimRequest{Candidates: []sequencer.ClaimCandidate{{ID: "dependency", Version: 1}}, Owner: "owner", Now: now, LeaseDuration: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

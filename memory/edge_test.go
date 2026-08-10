@@ -60,7 +60,7 @@ func TestStoreValidationInspectionAndResetEdges(t *testing.T) {
 		t.Fatalf("RecoverExpired(eligible) = %d, %v", recovered, err)
 	}
 	blocked := memory.New()
-	if err := blocked.Register(ctx, []sequencer.Registration{{ID: "dependent", Version: 1, Checksum: "sum", Dependencies: []sequencer.OperationID{"missing"}}}, now); err != nil {
+	if err := blocked.Register(ctx, []sequencer.Registration{{ID: "dependent", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: "sum"}}}}, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := blocked.ClaimNext(ctx, sequencer.ClaimRequest{OperationIDs: []sequencer.OperationID{"dependent"}, Owner: "owner", Now: now, LeaseDuration: time.Minute}); !errors.Is(err, sequencer.ErrNoEligibleOperation) {
@@ -124,9 +124,9 @@ func TestStoreDeferredRetryResetAndDefensiveCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, _ := store.Snapshot(ctx, "a", 1)
-	record.Dependencies = append(record.Dependencies, "mutated")
+	record.DependencyRefs = append(record.DependencyRefs, sequencer.DependencyRef{ID: "mutated", Version: 1, Checksum: "sum"})
 	recordAgain, _ := store.Snapshot(ctx, "a", 1)
-	if len(recordAgain.Dependencies) != 0 || recordAgain.State != sequencer.Eligible {
+	if len(recordAgain.DependencyRefs) != 0 || recordAgain.State != sequencer.Eligible {
 		t.Fatalf("record = %+v", recordAgain)
 	}
 }

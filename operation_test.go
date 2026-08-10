@@ -14,16 +14,16 @@ func TestNewOperationValidatesAndFreezesMetadata(t *testing.T) {
 	t.Parallel()
 
 	tags := []string{"postal", "backfill"}
-	dependencies := []sequencer.OperationID{"schema-ready"}
+	dependencies := []sequencer.DependencyRef{{ID: "schema-ready", Version: 1, Checksum: "sha256:schema-ready"}}
 	op, err := sequencer.NewOperation(sequencer.OperationSpec{
-		ID:           "postal.backfill-postcodes",
-		Version:      2,
-		Checksum:     "sha256:0123456789abcdef",
-		Description:  "Backfill normalized postcodes",
-		Tags:         tags,
-		Channel:      "deploy",
-		Dependencies: dependencies,
-		Environments: []string{"production"},
+		ID:             "postal.backfill-postcodes",
+		Version:        2,
+		Checksum:       "sha256:0123456789abcdef",
+		Description:    "Backfill normalized postcodes",
+		Tags:           tags,
+		Channel:        "deploy",
+		DependencyRefs: dependencies,
+		Environments:   []string{"production"},
 		Policy: sequencer.Policy{
 			Mode:          sequencer.OneTime,
 			MaxAttempts:   3,
@@ -39,11 +39,11 @@ func TestNewOperationValidatesAndFreezesMetadata(t *testing.T) {
 	}
 
 	tags[0] = "mutated"
-	dependencies[0] = "mutated"
+	dependencies[0].ID = "mutated"
 	if got := op.Spec().Tags[0]; got != "postal" {
 		t.Fatalf("operation retained caller tags: %q", got)
 	}
-	if got := op.Spec().Dependencies[0]; got != "schema-ready" {
+	if got := op.Spec().DependencyRefs[0].ID; got != "schema-ready" {
 		t.Fatalf("operation retained caller dependencies: %q", got)
 	}
 	snapshot := op.Spec()
@@ -87,9 +87,9 @@ func TestNewOperationAcceptsEveryBoundedModeAndExactCollectionLimit(t *testing.T
 	spec.Policy.Mode = sequencer.Repeatable
 	spec.Policy.MaxAttempts = 1
 	spec.Policy.MaxExceptions = 2
-	spec.Dependencies = make([]sequencer.OperationID, sequencer.DefaultMaxDependencies)
-	for index := range spec.Dependencies {
-		spec.Dependencies[index] = sequencer.OperationID(fmt.Sprintf("dependency-%d", index))
+	spec.DependencyRefs = make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies)
+	for index := range spec.DependencyRefs {
+		spec.DependencyRefs[index] = sequencer.DependencyRef{ID: sequencer.OperationID(fmt.Sprintf("dependency-%d", index)), Version: 1, Checksum: "sum"}
 	}
 	spec.Tags = make([]string, sequencer.DefaultMaxTags)
 	for index := range spec.Tags {
@@ -120,9 +120,9 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 		}()},
 		{name: "too many dependencies", spec: func() sequencer.OperationSpec {
 			s := validSpec("a")
-			s.Dependencies = make([]sequencer.OperationID, sequencer.DefaultMaxDependencies+1)
-			for index := range s.Dependencies {
-				s.Dependencies[index] = sequencer.OperationID(fmt.Sprintf("d-%d", index))
+			s.DependencyRefs = make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies+1)
+			for index := range s.DependencyRefs {
+				s.DependencyRefs[index] = sequencer.DependencyRef{ID: sequencer.OperationID(fmt.Sprintf("d-%d", index)), Version: 1, Checksum: "sum"}
 			}
 			return s
 		}()},
@@ -133,12 +133,12 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 		}()},
 		{name: "self dependency", spec: func() sequencer.OperationSpec {
 			s := validSpec("a")
-			s.Dependencies = []sequencer.OperationID{"a"}
+			s.DependencyRefs = []sequencer.DependencyRef{{ID: "a", Version: 1, Checksum: "sum"}}
 			return s
 		}()},
 		{name: "duplicate dependency", spec: func() sequencer.OperationSpec {
 			s := validSpec("a")
-			s.Dependencies = []sequencer.OperationID{"b", "b"}
+			s.DependencyRefs = []sequencer.DependencyRef{{ID: "b", Version: 1, Checksum: "one"}, {ID: "b", Version: 2, Checksum: "two"}}
 			return s
 		}()},
 	}

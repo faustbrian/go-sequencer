@@ -25,7 +25,7 @@ func FuzzCompilePlanDeterminism(fuzz *testing.F) {
 			specs[index] = fuzzSpec(index)
 			if index > 0 {
 				dependency := int(data[index%len(data)]) % index
-				specs[index].Dependencies = []sequencer.OperationID{specs[dependency].ID}
+				specs[index].DependencyRefs = []sequencer.DependencyRef{{ID: specs[dependency].ID, Version: specs[dependency].Version, Checksum: specs[dependency].Checksum}}
 			}
 		}
 		first, firstErr := sequencer.CompilePlan(specs, sequencer.PlanOptions{})

@@ -15,7 +15,7 @@ func BenchmarkCompilePlanThousandOperations(benchmark *testing.B) {
 	specs[0] = fuzzSpec(0)
 	for index := 1; index < len(specs); index++ {
 		specs[index] = fuzzSpec(index)
-		specs[index].Dependencies = []sequencer.OperationID{specs[index-1].ID}
+		specs[index].DependencyRefs = []sequencer.DependencyRef{{ID: specs[index-1].ID, Version: specs[index-1].Version, Checksum: specs[index-1].Checksum}}
 	}
 	benchmark.ReportAllocs()
 	for benchmark.Loop() {

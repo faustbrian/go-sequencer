@@ -115,6 +115,33 @@ func TestCompilePlanRejectsBrokenGraphs(t *testing.T) {
 	})
 }
 
+func TestCompilePlanRequiresExactDependencyIdentity(t *testing.T) {
+	t.Parallel()
+
+	dependency := validSpec("dependency")
+	dependency.Version = 2
+	dependency.Checksum = "sha256:dependency-v2"
+	dependent := validSpec("dependent")
+	dependent.DependencyRefs = []sequencer.DependencyRef{{
+		ID: dependency.ID, Version: dependency.Version, Checksum: dependency.Checksum,
+	}}
+	if _, err := sequencer.CompilePlan([]sequencer.OperationSpec{dependent, dependency}, sequencer.PlanOptions{}); err != nil {
+		t.Fatalf("CompilePlan(exact dependency) error = %v", err)
+	}
+
+	for _, mutate := range []func(*sequencer.DependencyRef){
+		func(reference *sequencer.DependencyRef) { reference.Version++ },
+		func(reference *sequencer.DependencyRef) { reference.Checksum = "sha256:wrong" },
+	} {
+		candidate := dependent
+		candidate.DependencyRefs = slices.Clone(dependent.DependencyRefs)
+		mutate(&candidate.DependencyRefs[0])
+		if _, err := sequencer.CompilePlan([]sequencer.OperationSpec{candidate, dependency}, sequencer.PlanOptions{}); !errors.Is(err, sequencer.ErrDefinitionDrift) {
+			t.Fatalf("CompilePlan(mismatched dependency) error = %v, want ErrDefinitionDrift", err)
+		}
+	}
+}
+
 func TestCompilePlanEnforcesBounds(t *testing.T) {
 	t.Parallel()
 

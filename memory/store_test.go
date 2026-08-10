@@ -300,6 +300,66 @@ func TestStoreRegistrationIsAtomicAndRejectsDependencyDrift(t *testing.T) {
 	}
 }
 
+func TestStorePinsDependencyEligibilityToExactIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
+	store := memory.New()
+	registration := sequencer.Registration{
+		ID: "dependent", Version: 1, Checksum: "sha256:dependent",
+		DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"}},
+	}
+	if err := store.Register(ctx, []sequencer.Registration{
+		{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"},
+		{ID: "dependency", Version: 2, Checksum: "sha256:dependency-v2"},
+		registration,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	complete := func(version uint, checksum string) {
+		t.Helper()
+		claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+			Candidates: []sequencer.ClaimCandidate{{ID: "dependency", Version: version, Checksum: checksum}},
+			Owner: "owner", Now: now, LeaseDuration: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.MarkRunning(ctx, claim.Ownership(), now); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Complete(ctx, sequencer.Completion{Ownership: claim.Ownership(), State: sequencer.Succeeded, At: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete(2, "sha256:dependency-v2")
+	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum}},
+		Owner: "owner", Now: now, LeaseDuration: time.Second,
+	}); !errors.Is(err, sequencer.ErrNoEligibleOperation) {
+		t.Fatalf("dependent claimed after only newer dependency succeeded: %v", err)
+	}
+	complete(1, "sha256:dependency-v1")
+	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum}},
+		Owner: "owner", Now: now, LeaseDuration: time.Second,
+	}); err != nil {
+		t.Fatalf("dependent not claimed after exact dependency succeeded: %v", err)
+	}
+
+	record, err := store.Snapshot(ctx, registration.ID, registration.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.DependencyRefs[0].Checksum = "mutated"
+	again, err := store.Snapshot(ctx, registration.ID, registration.Version)
+	if err != nil || again.DependencyRefs[0].Checksum != "sha256:dependency-v1" {
+		t.Fatalf("Snapshot dependency refs are mutable: %+v, %v", again.DependencyRefs, err)
+	}
+}
+
 func TestStoreValidatesClaimFieldsIndependentlyAndSkipsIneligibleCandidates(t *testing.T) {
 	t.Parallel()
 

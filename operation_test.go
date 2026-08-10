@@ -53,6 +53,33 @@ func TestNewOperationValidatesAndFreezesMetadata(t *testing.T) {
 	}
 }
 
+func TestNewOperationRequiresAndFreezesExactDependencyReferences(t *testing.T) {
+	t.Parallel()
+
+	legacy := validSpec("legacy-dependent")
+	legacy.Dependencies = []sequencer.OperationID{"dependency"}
+	if _, err := sequencer.NewOperation(legacy); !errors.Is(err, sequencer.ErrUnpinnedDependency) {
+		t.Fatalf("NewOperation(legacy dependency) error = %v, want ErrUnpinnedDependency", err)
+	}
+
+	references := []sequencer.DependencyRef{{ID: "dependency", Version: 2, Checksum: "sha256:dependency-v2"}}
+	exact := validSpec("exact-dependent")
+	exact.DependencyRefs = references
+	operation, err := sequencer.NewOperation(exact)
+	if err != nil {
+		t.Fatalf("NewOperation(exact dependency) error = %v", err)
+	}
+	references[0].Checksum = "mutated"
+	if got := operation.Spec().DependencyRefs[0].Checksum; got != "sha256:dependency-v2" {
+		t.Fatalf("operation retained caller dependency refs: %q", got)
+	}
+	snapshot := operation.Spec()
+	snapshot.DependencyRefs[0].Version = 99
+	if got := operation.Spec().DependencyRefs[0].Version; got != 2 {
+		t.Fatalf("Spec returned mutable dependency refs: %d", got)
+	}
+}
+
 func TestNewOperationAcceptsEveryBoundedModeAndExactCollectionLimit(t *testing.T) {
 	t.Parallel()
 

@@ -48,11 +48,23 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	for _, registration := range registrations {
+		if registration.ID == "" || registration.Version == 0 || registration.Checksum == "" ||
+			len(registration.Dependencies) > sequencer.DefaultMaxDependencies {
+			return sequencer.ErrInvalidOperation
+		}
+		registration.Dependencies = slices.Clone(registration.Dependencies)
+		slices.Sort(registration.Dependencies)
+		for index, dependency := range registration.Dependencies {
+			if dependency == "" || dependency == registration.ID ||
+				(index > 0 && dependency == registration.Dependencies[index-1]) {
+				return sequencer.ErrInvalidOperation
+			}
+		}
 		dependencies := make([]string, len(registration.Dependencies))
 		for index, dependency := range registration.Dependencies {
 			dependencies[index] = string(dependency)
 		}
-		if _, err = tx.Exec(ctx, `
+		result, execErr := tx.Exec(ctx, `
 INSERT INTO sequencer_operations (
     operation_id, version, checksum, dependencies, state, eligible_at,
     created_at, updated_at
@@ -60,17 +72,36 @@ INSERT INTO sequencer_operations (
           clock_timestamp(), clock_timestamp())
 ON CONFLICT (operation_id, version) DO NOTHING`,
 			registration.ID, registration.Version, registration.Checksum, dependencies,
-		); err != nil {
-			return err
+		)
+		if execErr != nil {
+			return execErr
 		}
 		var checksum string
+		var storedDependencies []string
+		var registeredAt time.Time
 		if err = tx.QueryRow(ctx, `
-SELECT checksum FROM sequencer_operations
-WHERE operation_id = $1 AND version = $2`, registration.ID, registration.Version).Scan(&checksum); err != nil {
+SELECT checksum, dependencies, updated_at FROM sequencer_operations
+WHERE operation_id = $1 AND version = $2`, registration.ID, registration.Version).Scan(
+			&checksum, &storedDependencies, &registeredAt,
+		); err != nil {
 			return err
 		}
 		if checksum != registration.Checksum {
 			return fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, registration.ID, registration.Version)
+		}
+		if !slices.Equal(storedDependencies, dependencies) {
+			return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
+		}
+		if result.RowsAffected() == 1 {
+			version, conversionErr := toInt64(registration.Version)
+			if conversionErr != nil {
+				return conversionErr
+			}
+			if err = insertAudit(ctx, tx, registration.ID, version, 0,
+				sequencer.Pending, sequencer.Eligible, registeredAt, "", 0,
+				"system", "registered"); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit(ctx)
@@ -80,6 +111,9 @@ WHERE operation_id = $1 AND version = $2`, registration.ID, registration.Version
 func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
 	if request.Owner == "" || request.LeaseDuration <= 0 || (len(request.Candidates) == 0 && len(request.OperationIDs) == 0) {
 		return sequencer.Claim{}, sequencer.ErrInvalidOperation
+	}
+	if request.LeaseDuration.Milliseconds() <= 0 {
+		return sequencer.Claim{}, sequencer.ErrInvalidLease
 	}
 	candidates := request.Candidates
 	if len(candidates) == 0 {
@@ -105,12 +139,25 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	var claim sequencer.Claim
+	var status, from string
 	var version, number, fencing int64
 	err = tx.QueryRow(ctx, `
-WITH candidate AS (
+WITH requested AS MATERIALIZED (
+    SELECT * FROM unnest($1::text[], $2::bigint[], $3::text[])
+         WITH ORDINALITY input(operation_id, version, checksum, ordinal)
+), drift AS MATERIALIZED (
     SELECT operation.operation_id, operation.version
-    FROM unnest($1::text[], $2::bigint[], $3::text[])
-         WITH ORDINALITY requested(operation_id, version, checksum, ordinal)
+    FROM requested
+    JOIN sequencer_operations operation
+      ON operation.operation_id = requested.operation_id
+     AND operation.version = requested.version
+    WHERE requested.version <> 0 AND requested.checksum <> ''
+      AND operation.checksum <> requested.checksum
+    ORDER BY requested.ordinal
+    LIMIT 1
+), candidate AS (
+    SELECT operation.operation_id, operation.version, operation.state
+    FROM requested
     JOIN LATERAL (
         SELECT * FROM sequencer_operations
         WHERE operation_id = requested.operation_id
@@ -118,7 +165,8 @@ WITH candidate AS (
           AND (requested.checksum = '' OR sequencer_operations.checksum = requested.checksum)
         ORDER BY sequencer_operations.version DESC LIMIT 1
     ) operation ON true
-    WHERE operation.state IN ('eligible', 'retryable', 'deferred')
+    WHERE NOT EXISTS (SELECT 1 FROM drift)
+      AND operation.state IN ('eligible', 'retryable', 'deferred')
       AND operation.eligible_at <= clock_timestamp()
       AND NOT EXISTS (
           SELECT 1 FROM unnest(operation.dependencies) dependency(operation_id)
@@ -146,17 +194,27 @@ WITH candidate AS (
       AND operation.version = candidate.version
     RETURNING operation.operation_id, operation.version,
               operation.attempt_number, operation.fencing_token,
-              operation.updated_at, operation.lease_expires_at
+              operation.updated_at, operation.lease_expires_at,
+              candidate.state AS from_state
 )
-SELECT * FROM claimed`, ids, versions, checksums, request.Owner, request.LeaseDuration.Milliseconds()).Scan(
-		&claim.Attempt.OperationID, &version, &number, &fencing,
-		&claim.Attempt.StartedAt, &claim.Until,
+SELECT 'checksum_drift', operation_id, version, 0::bigint, 0::bigint,
+       'epoch'::timestamptz, 'epoch'::timestamptz, 'eligible'
+FROM drift
+UNION ALL
+SELECT 'claimed', operation_id, version, attempt_number, fencing_token,
+       updated_at, lease_expires_at, from_state
+FROM claimed`, ids, versions, checksums, request.Owner, request.LeaseDuration.Milliseconds()).Scan(
+		&status, &claim.Attempt.OperationID, &version, &number, &fencing,
+		&claim.Attempt.StartedAt, &claim.Until, &from,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sequencer.Claim{}, sequencer.ErrNoEligibleOperation
 	}
 	if err != nil {
 		return sequencer.Claim{}, err
+	}
+	if status == "checksum_drift" {
+		return sequencer.Claim{}, fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, claim.Attempt.OperationID, version)
 	}
 	if claim.Attempt.Version, err = toUint(version); err != nil {
 		return sequencer.Claim{}, err
@@ -177,6 +235,20 @@ INSERT INTO sequencer_attempts (
 		claim.Attempt.StartedAt,
 	); err != nil {
 		return sequencer.Claim{}, err
+	}
+	fromState, err := parseState(from)
+	if err != nil {
+		return sequencer.Claim{}, err
+	}
+	if fromState != sequencer.Eligible {
+		if err = sequencer.ValidateTransition(fromState, sequencer.Eligible); err != nil {
+			return sequencer.Claim{}, err
+		}
+		if err = insertAudit(ctx, tx, claim.Attempt.OperationID, version, number,
+			fromState, sequencer.Eligible, claim.Attempt.StartedAt,
+			request.Owner, fencing, request.Owner, "became eligible"); err != nil {
+			return sequencer.Claim{}, err
+		}
 	}
 	if err = insertAudit(ctx, tx, claim.Attempt.OperationID, version, number,
 		sequencer.Eligible, sequencer.Claimed, claim.Attempt.StartedAt,
@@ -251,7 +323,10 @@ func (store *Store) RenewLease(ctx context.Context, ownership sequencer.Ownershi
 	var until time.Time
 	err := store.database.QueryRow(ctx, `
 UPDATE sequencer_operations SET
-    lease_expires_at = clock_timestamp() + ($5 * interval '1 millisecond'),
+    lease_expires_at = GREATEST(
+        lease_expires_at,
+        clock_timestamp() + ($5 * interval '1 millisecond')
+    ),
     updated_at = clock_timestamp()
 WHERE operation_id = $1 AND version = $2 AND owner = $3
   AND fencing_token = $4 AND state IN ('claimed', 'running')
@@ -560,7 +635,10 @@ SELECT from_state, attempt_number, fencing_token, updated_at FROM updated`,
 		request.Actor, request.Reason); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return sequencer.UnknownResult(err)
+	}
+	return nil
 }
 
 func insertAudit(ctx context.Context, tx pgx.Tx, id sequencer.OperationID,

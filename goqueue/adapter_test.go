@@ -203,6 +203,10 @@ func TestAdaptersRejectInvalidInputAndPropagateTransportErrors(t *testing.T) {
 		t.Fatalf("NewWorker(nil) error = %v", err)
 	}
 	worker, _ := goqueue.NewWorker(&executorStub{})
+	valid := goqueue.Message{OperationID: "a", Version: 1, Checksum: "sum", DeliveryID: "delivery"}
+	if disposition, err := worker.HandleDelivery(context.Background(), valid, nil); disposition != goqueue.Unsettled || !errors.Is(err, goqueue.ErrInvalidAdapter) {
+		t.Fatalf("HandleDelivery(nil settlement) = %v, %v", disposition, err)
+	}
 	for _, message := range []goqueue.Message{
 		{Version: 1, Checksum: "sum", DeliveryID: "delivery"},
 		{OperationID: "a", Checksum: "sum", DeliveryID: "delivery"},
@@ -211,6 +215,9 @@ func TestAdaptersRejectInvalidInputAndPropagateTransportErrors(t *testing.T) {
 	} {
 		if err := worker.Handle(context.Background(), message); !errors.Is(err, goqueue.ErrInvalidAdapter) {
 			t.Fatalf("Handle(%+v) error = %v", message, err)
+		}
+		if disposition, err := worker.HandleDelivery(context.Background(), message, &settlementStub{}); disposition != goqueue.Unsettled || !errors.Is(err, goqueue.ErrInvalidAdapter) {
+			t.Fatalf("HandleDelivery(%+v) = %v, %v", message, disposition, err)
 		}
 	}
 }

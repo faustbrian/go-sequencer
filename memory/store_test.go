@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -297,6 +298,43 @@ func TestStoreRegistrationIsAtomicAndRejectsDependencyDrift(t *testing.T) {
 		{ID: "existing", Version: 1, Checksum: "sha256:existing", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-a", Version: 1, Checksum: "sha256:a"}}},
 	}, now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("Register(same dependencies) error = %v", err)
+	}
+	for _, reference := range []sequencer.DependencyRef{
+		{ID: "dependency-a", Version: 2, Checksum: "sha256:a"},
+		{ID: "dependency-a", Version: 1, Checksum: "sha256:changed"},
+	} {
+		err := store.Register(ctx, []sequencer.Registration{{
+			ID: "existing", Version: 1, Checksum: "sha256:existing",
+			DependencyRefs: []sequencer.DependencyRef{reference},
+		}}, now.Add(3*time.Minute))
+		if !errors.Is(err, sequencer.ErrDefinitionDrift) {
+			t.Fatalf("Register(exact dependency drift %+v) error = %v", reference, err)
+		}
+	}
+}
+
+func TestStoreCanonicalizesExactDependencyOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 9, 30, 0, 0, time.UTC)
+	store := memory.New()
+	references := []sequencer.DependencyRef{
+		{ID: "b", Version: 2, Checksum: "sha256:b"},
+		{ID: "a", Version: 1, Checksum: "sha256:a"},
+	}
+	registration := sequencer.Registration{ID: "dependent", Version: 1, Checksum: "sha256:dependent", DependencyRefs: references}
+	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
+		t.Fatal(err)
+	}
+	slices.Reverse(references)
+	registration.DependencyRefs = references
+	if err := store.Register(ctx, []sequencer.Registration{registration}, now.Add(time.Minute)); err != nil {
+		t.Fatalf("Register(equivalent order) error = %v", err)
+	}
+	record, err := store.Snapshot(ctx, registration.ID, registration.Version)
+	if err != nil || len(record.DependencyRefs) != 2 || record.DependencyRefs[0].ID != "a" || record.DependencyRefs[1].ID != "b" {
+		t.Fatalf("Snapshot canonical refs = %+v, %v", record.DependencyRefs, err)
 	}
 }
 

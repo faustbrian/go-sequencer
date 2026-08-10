@@ -61,6 +61,10 @@ func TestNewOperationRequiresAndFreezesExactDependencyReferences(t *testing.T) {
 	if _, err := sequencer.NewOperation(legacy); !errors.Is(err, sequencer.ErrUnpinnedDependency) {
 		t.Fatalf("NewOperation(legacy dependency) error = %v, want ErrUnpinnedDependency", err)
 	}
+	legacy.DependencyRefs = []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"}}
+	if _, err := sequencer.NewOperation(legacy); !errors.Is(err, sequencer.ErrUnpinnedDependency) {
+		t.Fatalf("NewOperation(mixed dependency forms) error = %v, want ErrUnpinnedDependency", err)
+	}
 
 	references := []sequencer.DependencyRef{{ID: "dependency", Version: 2, Checksum: "sha256:dependency-v2"}}
 	exact := validSpec("exact-dependent")
@@ -134,6 +138,16 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 		{name: "self dependency", spec: func() sequencer.OperationSpec {
 			s := validSpec("a")
 			s.DependencyRefs = []sequencer.DependencyRef{{ID: "a", Version: 1, Checksum: "sum"}}
+			return s
+		}()},
+		{name: "dependency without version", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.DependencyRefs = []sequencer.DependencyRef{{ID: "b", Checksum: "sum"}}
+			return s
+		}()},
+		{name: "dependency without checksum", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.DependencyRefs = []sequencer.DependencyRef{{ID: "b", Version: 1}}
 			return s
 		}()},
 		{name: "duplicate dependency", spec: func() sequencer.OperationSpec {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/faustbrian/golib/pkg/sequencer/sequencehttp"
@@ -133,6 +134,7 @@ func TestHandlerValidationAndFailureResponses(t *testing.T) {
 		{http.MethodPost, "/operations/a/reset", []byte(`{"version":0,"actor":"op","reason":"retry"}`), http.StatusBadRequest},
 		{http.MethodPost, "/operations/a/reset", []byte(`{"version":1,"actor":"","reason":"retry"}`), http.StatusBadRequest},
 		{http.MethodPost, "/operations/a/reset", []byte(`{"version":1,"actor":"op","reason":""}`), http.StatusBadRequest},
+		{http.MethodPost, "/operations/a/reset", []byte(`{"version":1,"actor":"op","reason":"` + strings.Repeat("x", 8<<10) + `"}`), http.StatusBadRequest},
 		{http.MethodPost, "/operations/a/reset", []byte(`{"version":1,"actor":"op","reason":"retry"}`), http.StatusConflict},
 	}
 	for _, test := range tests {

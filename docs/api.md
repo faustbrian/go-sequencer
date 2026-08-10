@@ -32,8 +32,3 @@ explicitly unknown.
 Typed constructors classify permanent, retryable, skipped, blocked,
 unknown-result, and rollback failures while preserving the in-process cause.
 Only redaction-safe classifications are persisted by the runner.
-
-`sequencehttp.Authorizer` returns the stable, non-empty principal authenticated
-and authorized for each action and operation resource. Reset requests remain
-bounded and must name that exact principal as their audit actor; mismatched or
-missing identities are rejected before the controller can change eligibility.

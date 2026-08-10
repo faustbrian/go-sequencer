@@ -18,6 +18,10 @@
 
 ### Fixed
 
+- Treat persisted skips as completed one-time outcomes on later synchronous
+  runs instead of attempting an impossible second claim.
+- Align the public transition model with audited claimed-attempt recovery and
+  attributable successful-operation resets.
 - Discard failed handler output so partial or secret-bearing data cannot enter
   durable attempt history.
 - Treat cancellation racing registration or claim polling as graceful drain

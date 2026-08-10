@@ -78,6 +78,12 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	if err := store.Register(ctx, []sequencer.Registration{registration}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Register(ctx, []sequencer.Registration{{
+		ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum,
+		Dependencies: []sequencer.OperationID{"other-schema"},
+	}}, time.Now()); !errors.Is(err, sequencer.ErrDefinitionDrift) {
+		t.Fatalf("dependency drift error = %v", err)
+	}
 	if err := store.Register(ctx, []sequencer.Registration{{ID: registration.ID, Version: 1, Checksum: "sha256:drift"}}, time.Now()); !errors.Is(err, sequencer.ErrChecksumDrift) {
 		t.Fatalf("checksum drift error = %v", err)
 	}
@@ -216,6 +222,10 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	until, err := store.RenewLease(ctx, oldClaim.Ownership(), time.Now(), 2*time.Minute)
 	if err != nil || !until.After(time.Now().Add(time.Minute)) {
 		t.Fatalf("RenewLease() = %s, %v", until, err)
+	}
+	shorter, err := store.RenewLease(ctx, oldClaim.Ownership(), time.Now(), time.Minute)
+	if err != nil || shorter.Before(until) {
+		t.Fatalf("shorter RenewLease() = %s, %v; previous expiry %s", shorter, err, until)
 	}
 	if err := store.Complete(ctx, sequencer.Completion{Ownership: oldClaim.Ownership(), State: sequencer.Succeeded}); err != nil {
 		t.Fatal(err)

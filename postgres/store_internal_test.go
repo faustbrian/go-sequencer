@@ -151,6 +151,12 @@ func TestStoreClaimTransactionFailures(t *testing.T) {
 	}); !errors.Is(err, errInvalidLedgerInteger) {
 		t.Fatalf("ClaimNext(overflow) error = %v", err)
 	}
+	if _, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: "a", Version: 1, Checksum: "sum"}},
+		Owner:      "owner", LeaseDuration: time.Nanosecond,
+	}); !errors.Is(err, sequencer.ErrInvalidLease) {
+		t.Fatalf("ClaimNext(sub-millisecond lease) error = %v", err)
+	}
 }
 
 func TestStoreMarkRunningTransactionFailures(t *testing.T) {

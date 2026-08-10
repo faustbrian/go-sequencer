@@ -125,7 +125,8 @@ func TestWorkerLeavesDeliveryUnsettledWhenSettlementCannotBeConfirmed(t *testing
 				t.Fatal(err)
 			}
 			disposition, err := worker.HandleDelivery(context.Background(), message, test.settlement)
-			if disposition != goqueue.Unsettled || !errors.Is(err, settlementErr) || !errors.Is(err, test.executionErr) {
+			if disposition != goqueue.Unsettled || !errors.Is(err, settlementErr) ||
+				(test.executionErr != nil && !errors.Is(err, test.executionErr)) {
 				t.Fatalf("HandleDelivery() = %v, %v", disposition, err)
 			}
 		})

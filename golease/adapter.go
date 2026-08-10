@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+const (
+	// DefaultCleanupTimeout bounds lease release when New is used.
+	DefaultCleanupTimeout = 5 * time.Second
+	// MaxCleanupTimeout is the largest configurable lease-release bound.
+	MaxCleanupTimeout = time.Minute
+)
+
 // ErrInvalidAdapter reports missing lease dependencies or ownership proof.
 var ErrInvalidAdapter = errors.New("sequencer/golease: invalid adapter")
 
@@ -30,14 +37,22 @@ type Acquirer interface {
 }
 
 // Adapter scopes one callback to an explicitly fenced lease.
-type Adapter struct{ acquirer Acquirer }
+type Adapter struct {
+	acquirer       Acquirer
+	cleanupTimeout time.Duration
+}
 
 // New validates the lease acquirer.
 func New(acquirer Acquirer) (*Adapter, error) {
-	if acquirer == nil {
+	return NewWithCleanupTimeout(acquirer, DefaultCleanupTimeout)
+}
+
+// NewWithCleanupTimeout validates the acquirer and finite release bound.
+func NewWithCleanupTimeout(acquirer Acquirer, cleanupTimeout time.Duration) (*Adapter, error) {
+	if acquirer == nil || cleanupTimeout <= 0 || cleanupTimeout > MaxCleanupTimeout {
 		return nil, ErrInvalidAdapter
 	}
-	return &Adapter{acquirer: acquirer}, nil
+	return &Adapter{acquirer: acquirer, cleanupTimeout: cleanupTimeout}, nil
 }
 
 // WithClaim acquires, proves, executes, and compare-releases one singleton.
@@ -52,6 +67,10 @@ func (adapter *Adapter) WithClaim(ctx context.Context, key string, ttl time.Dura
 	if handle == nil || handle.Owner() == "" || handle.Fencing() == 0 {
 		return ErrInvalidAdapter
 	}
-	defer func() { err = errors.Join(err, handle.Release(context.WithoutCancel(ctx))) }()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.cleanupTimeout)
+		defer cancel()
+		err = errors.Join(err, handle.Release(cleanupCtx))
+	}()
 	return execute(ctx, Ownership{Owner: handle.Owner(), Fencing: handle.Fencing()})
 }

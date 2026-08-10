@@ -9,6 +9,8 @@ import (
 	"github.com/faustbrian/golib/pkg/sequencer/goidempotency"
 )
 
+var errMissingCleanupDeadline = errors.New("cleanup context has no deadline")
+
 func TestAdapterBoundsDetachedCleanupAfterCallerCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -149,6 +151,9 @@ func (gate *blockingCleanupGate) Fail(ctx context.Context, _ goidempotency.Token
 
 func (gate *blockingCleanupGate) block(ctx context.Context) error {
 	_, gate.hadDeadline = ctx.Deadline()
+	if !gate.hadDeadline {
+		return errMissingCleanupDeadline
+	}
 	<-ctx.Done()
 	return ctx.Err()
 }

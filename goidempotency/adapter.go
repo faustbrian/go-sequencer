@@ -5,6 +5,14 @@ package goidempotency
 import (
 	"context"
 	"errors"
+	"time"
+)
+
+const (
+	// DefaultCleanupTimeout bounds a terminal gate update when New is used.
+	DefaultCleanupTimeout = 5 * time.Second
+	// MaxCleanupTimeout is the largest configurable terminal gate update bound.
+	MaxCleanupTimeout = time.Minute
 )
 
 // ErrInvalidAdapter reports missing idempotency dependencies or keys.
@@ -21,14 +29,22 @@ type Gate interface {
 }
 
 // Adapter coordinates one explicitly idempotent callback.
-type Adapter struct{ gate Gate }
+type Adapter struct {
+	gate           Gate
+	cleanupTimeout time.Duration
+}
 
 // New validates the idempotency gate.
 func New(gate Gate) (*Adapter, error) {
-	if gate == nil {
+	return NewWithCleanupTimeout(gate, DefaultCleanupTimeout)
+}
+
+// NewWithCleanupTimeout validates the gate and finite terminal-update bound.
+func NewWithCleanupTimeout(gate Gate, cleanupTimeout time.Duration) (*Adapter, error) {
+	if gate == nil || cleanupTimeout <= 0 || cleanupTimeout > MaxCleanupTimeout {
 		return nil, ErrInvalidAdapter
 	}
-	return &Adapter{gate: gate}, nil
+	return &Adapter{gate: gate, cleanupTimeout: cleanupTimeout}, nil
 }
 
 // Do runs only newly acquired work and records its terminal result.
@@ -41,7 +57,11 @@ func (adapter *Adapter) Do(ctx context.Context, key string, execute func(context
 		return err
 	}
 	if err = execute(ctx); err != nil {
-		return errors.Join(err, adapter.gate.Fail(context.WithoutCancel(ctx), token, err))
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.cleanupTimeout)
+		defer cancel()
+		return errors.Join(err, adapter.gate.Fail(cleanupCtx, token, err))
 	}
-	return adapter.gate.Complete(context.WithoutCancel(ctx), token)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.cleanupTimeout)
+	defer cancel()
+	return adapter.gate.Complete(cleanupCtx, token)
 }

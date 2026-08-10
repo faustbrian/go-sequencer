@@ -9,6 +9,8 @@ import (
 	"github.com/faustbrian/golib/pkg/sequencer/golease"
 )
 
+var errMissingReleaseDeadline = errors.New("release context has no deadline")
+
 func TestAdapterBoundsDetachedReleaseAfterCallerCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -131,6 +133,9 @@ func (handle *blockingHandle) Owner() string   { return handle.owner }
 func (handle *blockingHandle) Fencing() uint64 { return handle.fencing }
 func (handle *blockingHandle) Release(ctx context.Context) error {
 	_, handle.hadDeadline = ctx.Deadline()
+	if !handle.hadDeadline {
+		return errMissingReleaseDeadline
+	}
 	<-ctx.Done()
 	return ctx.Err()
 }

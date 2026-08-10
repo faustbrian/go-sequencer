@@ -167,8 +167,8 @@ func (runner *Runner) Execute(ctx context.Context) (Report, error) {
 	for _, operation := range runner.plan.operations {
 		registrations = append(registrations, Registration{
 			ID: operation.spec.ID, Version: operation.spec.Version,
-			Checksum:     operation.spec.Checksum,
-			Dependencies: slices.Clone(operation.spec.Dependencies),
+			Checksum:       operation.spec.Checksum,
+			DependencyRefs: slices.Clone(operation.spec.DependencyRefs),
 		})
 	}
 	if err := runner.store.Register(ctx, registrations, report.StartedAt); err != nil {

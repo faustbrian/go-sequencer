@@ -53,17 +53,21 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 		if registration.ID == "" || registration.Version == 0 || registration.Checksum == "" {
 			return sequencer.ErrInvalidOperation
 		}
-		registration.Dependencies = slices.Clone(registration.Dependencies)
-		slices.Sort(registration.Dependencies)
-		for index, dependency := range registration.Dependencies {
-			if dependency == "" || dependency == registration.ID ||
-				(index > 0 && dependency == registration.Dependencies[index-1]) {
+		if len(registration.Dependencies) > 0 {
+			return sequencer.ErrUnpinnedDependency
+		}
+		registration.DependencyRefs = slices.Clone(registration.DependencyRefs)
+		slices.SortFunc(registration.DependencyRefs, compareDependencyRefs)
+		for index, dependency := range registration.DependencyRefs {
+			if dependency.ID == "" || dependency.ID == registration.ID || dependency.Version == 0 || dependency.Checksum == "" ||
+				(index > 0 && dependency.ID == registration.DependencyRefs[index-1].ID) {
 				return sequencer.ErrInvalidOperation
 			}
 		}
+		registration.Dependencies = slices.Clone(registration.Dependencies)
 		identifier := key{registration.ID, registration.Version}
 		if pending, exists := normalized[identifier]; exists {
-			if pending.Checksum != registration.Checksum || !slices.Equal(pending.Dependencies, registration.Dependencies) {
+			if pending.Checksum != registration.Checksum || !slices.Equal(pending.DependencyRefs, registration.DependencyRefs) {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
 			}
 			continue
@@ -72,7 +76,7 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 			if current.record.Checksum != registration.Checksum {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, registration.ID, registration.Version)
 			}
-			if !slices.Equal(current.record.Dependencies, registration.Dependencies) {
+			if !slices.Equal(current.record.DependencyRefs, registration.DependencyRefs) {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
 			}
 			continue
@@ -116,7 +120,7 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		if current != nil && candidate.Checksum != "" && current.record.Checksum != candidate.Checksum {
 			return sequencer.Claim{}, fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, candidate.ID, candidate.Version)
 		}
-		if current == nil || current.record.EligibleAt.After(request.Now) || !store.dependenciesSucceeded(current.record.Dependencies) {
+		if current == nil || current.record.EligibleAt.After(request.Now) || !store.dependenciesSucceeded(current.record.DependencyRefs) {
 			continue
 		}
 		if current.record.State == sequencer.Retryable || current.record.State == sequencer.Deferred {
@@ -358,10 +362,11 @@ func (store *Store) latest(id sequencer.OperationID) *entry {
 	return store.entries[key{id, versions[len(versions)-1]}]
 }
 
-func (store *Store) dependenciesSucceeded(dependencies []sequencer.OperationID) bool {
+func (store *Store) dependenciesSucceeded(dependencies []sequencer.DependencyRef) bool {
 	for _, dependency := range dependencies {
-		current := store.latest(dependency)
-		if current == nil || (current.record.State != sequencer.Succeeded && current.record.State != sequencer.Skipped) {
+		current := store.entries[key{dependency.ID, dependency.Version}]
+		if current == nil || current.record.Checksum != dependency.Checksum ||
+			(current.record.State != sequencer.Succeeded && current.record.State != sequencer.Skipped) {
 			return false
 		}
 	}
@@ -389,8 +394,19 @@ func (current *entry) appendAudit(from, to sequencer.State, at time.Time, actor,
 }
 
 func cloneRecord(record sequencer.Record) sequencer.Record {
+	record.DependencyRefs = slices.Clone(record.DependencyRefs)
 	record.Dependencies = slices.Clone(record.Dependencies)
 	return record
+}
+
+func compareDependencyRefs(left, right sequencer.DependencyRef) int {
+	if left.ID < right.ID {
+		return -1
+	}
+	if left.ID > right.ID {
+		return 1
+	}
+	return 0
 }
 
 func cloneAttempt(attempt sequencer.AttemptRecord) sequencer.AttemptRecord {

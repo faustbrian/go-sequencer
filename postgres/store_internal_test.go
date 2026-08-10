@@ -93,8 +93,9 @@ func TestStoreRegisterTransactionFailures(t *testing.T) {
 	}{
 		{"insert", &fakeTx{execErrs: []error{cause}}, cause},
 		{"scan", &fakeTx{rows: []pgx.Row{scriptedRow{err: cause}}}, cause},
-		{"drift", &fakeTx{rows: []pgx.Row{scriptedRow{values: []any{"other"}}}}, sequencer.ErrChecksumDrift},
-		{"commit", &fakeTx{rows: []pgx.Row{scriptedRow{values: []any{"sum"}}}, commitErr: cause}, cause},
+		{"drift", &fakeTx{rows: []pgx.Row{registrationRow("other", nil)}}, sequencer.ErrChecksumDrift},
+		{"definition drift", &fakeTx{rows: []pgx.Row{registrationRow("sum", []string{"other"})}}, sequencer.ErrDefinitionDrift},
+		{"commit", &fakeTx{rows: []pgx.Row{registrationRow("sum", nil)}, commitErr: cause}, cause},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -103,6 +104,21 @@ func TestStoreRegisterTransactionFailures(t *testing.T) {
 				t.Fatalf("Register() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestStoreRegisterWritesAuditForNewIdentity(t *testing.T) {
+	t.Parallel()
+
+	tx := &fakeTx{
+		rows:     []pgx.Row{registrationRow("sum", nil)},
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("INSERT 0 1")},
+	}
+	store := newStore(&fakeDatabase{tx: tx})
+	if err := store.Register(context.Background(), []sequencer.Registration{{
+		ID: "a", Version: 1, Checksum: "sum",
+	}}, time.Now()); err != nil {
+		t.Fatalf("Register() error = %v", err)
 	}
 }
 
@@ -119,9 +135,10 @@ func TestStoreClaimTransactionFailures(t *testing.T) {
 	}{
 		{"no rows", &fakeTx{rows: []pgx.Row{scriptedRow{err: pgx.ErrNoRows}}}, sequencer.ErrNoEligibleOperation},
 		{"scan", &fakeTx{rows: []pgx.Row{scriptedRow{err: cause}}}, cause},
-		{"negative version", &fakeTx{rows: []pgx.Row{scriptedRow{values: replace(base, 1, int64(-1))}}}, errInvalidLedgerInteger},
-		{"negative attempt", &fakeTx{rows: []pgx.Row{scriptedRow{values: replace(base, 2, int64(-1))}}}, errInvalidLedgerInteger},
-		{"negative fencing", &fakeTx{rows: []pgx.Row{scriptedRow{values: replace(base, 3, int64(-1))}}}, errInvalidLedgerInteger},
+		{"checksum drift", &fakeTx{rows: []pgx.Row{checksumDriftRow()}}, sequencer.ErrChecksumDrift},
+		{"negative version", &fakeTx{rows: []pgx.Row{scriptedRow{values: replace(base, 2, int64(-1))}}}, errInvalidLedgerInteger},
+		{"negative attempt", &fakeTx{rows: []pgx.Row{scriptedRow{values: replace(base, 3, int64(-1))}}}, errInvalidLedgerInteger},
+		{"negative fencing", &fakeTx{rows: []pgx.Row{scriptedRow{values: replace(base, 4, int64(-1))}}}, errInvalidLedgerInteger},
 		{"attempt insert", &fakeTx{rows: []pgx.Row{success}, execErrs: []error{cause}}, cause},
 		{"audit insert", &fakeTx{rows: []pgx.Row{success}, execErrs: []error{nil, cause}}, cause},
 		{"commit", &fakeTx{rows: []pgx.Row{success}, execErrs: []error{nil, nil}, commitErr: cause}, sequencer.ErrUnknownResult},
@@ -420,7 +437,15 @@ func validCompletion() sequencer.Completion {
 
 func claimRow() pgx.Row {
 	now := time.Now()
-	return scriptedRow{values: []any{"a", int64(1), int64(1), int64(1), now, now.Add(time.Minute)}}
+	return scriptedRow{values: []any{"claimed", "a", int64(1), int64(1), int64(1), now, now.Add(time.Minute), "eligible"}}
+}
+
+func checksumDriftRow() pgx.Row {
+	return scriptedRow{values: []any{"checksum_drift", "a", int64(1), int64(0), int64(0), time.Time{}, time.Time{}, "eligible"}}
+}
+
+func registrationRow(checksum string, dependencies []string) pgx.Row {
+	return scriptedRow{values: []any{checksum, dependencies, time.Now()}}
 }
 
 func runningRow() pgx.Row {
@@ -500,6 +525,7 @@ func (rows *fakeRows) Conn() *pgx.Conn        { return nil }
 type fakeTx struct {
 	rows      []pgx.Row
 	execErrs  []error
+	execTags  []pgconn.CommandTag
 	commitErr error
 }
 
@@ -515,12 +541,17 @@ func (tx *fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDes
 	return nil, nil
 }
 func (tx *fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	tag := pgconn.CommandTag{}
+	if len(tx.execTags) > 0 {
+		tag = tx.execTags[0]
+		tx.execTags = tx.execTags[1:]
+	}
 	if len(tx.execErrs) == 0 {
-		return pgconn.CommandTag{}, nil
+		return tag, nil
 	}
 	err := tx.execErrs[0]
 	tx.execErrs = tx.execErrs[1:]
-	return pgconn.CommandTag{}, err
+	return tag, err
 }
 func (tx *fakeTx) Query(context.Context, string, ...any) (pgx.Rows, error) { return nil, nil }
 func (tx *fakeTx) QueryRow(context.Context, string, ...any) pgx.Row {

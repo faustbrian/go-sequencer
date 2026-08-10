@@ -167,7 +167,7 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 	for _, operation := range fleet.plan.operations {
 		registrations = append(registrations, Registration{
 			ID: operation.spec.ID, Version: operation.spec.Version,
-			Checksum: operation.spec.Checksum, Dependencies: slices.Clone(operation.spec.Dependencies),
+			Checksum: operation.spec.Checksum, DependencyRefs: slices.Clone(operation.spec.DependencyRefs),
 		})
 		candidates = append(candidates, ClaimCandidate{ID: operation.spec.ID, Version: operation.spec.Version, Checksum: operation.spec.Checksum})
 	}

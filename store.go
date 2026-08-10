@@ -79,9 +79,11 @@ func RollbackFailure(cause error) error { return classify(ErrRollback, cause) }
 
 // Registration is durable operation identity and dependency metadata.
 type Registration struct {
-	ID           OperationID
-	Version      uint
-	Checksum     string
+	ID             OperationID
+	Version        uint
+	Checksum       string
+	DependencyRefs []DependencyRef
+	// Dependencies is retained for source compatibility and rejected when non-empty.
 	Dependencies []OperationID
 }
 

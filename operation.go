@@ -21,6 +21,8 @@ var (
 	ErrDependencyCycle = errors.New("sequencer: dependency cycle")
 	// ErrResourceLimit reports input beyond an explicit package bound.
 	ErrResourceLimit = errors.New("sequencer: resource limit exceeded")
+	// ErrUnpinnedDependency reports a dependency without an exact durable identity.
+	ErrUnpinnedDependency = errors.New("sequencer: unpinned dependency")
 )
 
 const (
@@ -46,6 +48,13 @@ var identifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
 
 // OperationID is a stable identifier shared by code, the ledger, and audit logs.
 type OperationID string
+
+// DependencyRef pins one prerequisite to an exact durable definition.
+type DependencyRef struct {
+	ID       OperationID
+	Version  uint
+	Checksum string
+}
 
 // ExecutionMode controls whether an operation may be replayed normally.
 type ExecutionMode uint8
@@ -149,12 +158,16 @@ func (function ConditionFunc) Evaluate(ctx context.Context, attempt Attempt) (De
 
 // OperationSpec is the complete declarative definition of an operation.
 type OperationSpec struct {
-	ID           OperationID
-	Version      uint
-	Checksum     string
-	Description  string
-	Tags         []string
-	Channel      string
+	ID             OperationID
+	Version        uint
+	Checksum       string
+	Description    string
+	Tags           []string
+	Channel        string
+	DependencyRefs []DependencyRef
+	// Dependencies is retained for source compatibility. Non-empty legacy
+	// references are rejected because selecting a dependency by ID is unsafe
+	// when multiple binary versions share a ledger.
 	Dependencies []OperationID
 	Environments []string
 	Policy       Policy
@@ -173,19 +186,23 @@ func NewOperation(spec OperationSpec) (Operation, error) {
 		(spec.Policy.Mode != OneTime && spec.Policy.Mode != Repeatable) ||
 		spec.Policy.Cancellation > CancellationDrainOnly ||
 		spec.Policy.RetryMode > InlineRetries ||
-		spec.Policy.Timeout <= 0 || len(spec.Dependencies) > DefaultMaxDependencies ||
+		spec.Policy.Timeout <= 0 || len(spec.DependencyRefs) > DefaultMaxDependencies ||
 		len(spec.Tags) > DefaultMaxTags {
 		return Operation{}, ErrInvalidOperation
 	}
-	seen := make(map[OperationID]struct{}, len(spec.Dependencies))
-	for _, dependency := range spec.Dependencies {
-		if dependency == spec.ID || !identifierPattern.MatchString(string(dependency)) {
-			return Operation{}, fmt.Errorf("%w: invalid dependency %q", ErrInvalidOperation, dependency)
+	if len(spec.Dependencies) > 0 {
+		return Operation{}, ErrUnpinnedDependency
+	}
+	seen := make(map[OperationID]struct{}, len(spec.DependencyRefs))
+	for _, dependency := range spec.DependencyRefs {
+		if dependency.ID == spec.ID || !identifierPattern.MatchString(string(dependency.ID)) ||
+			dependency.Version == 0 || dependency.Checksum == "" {
+			return Operation{}, fmt.Errorf("%w: invalid dependency %q", ErrInvalidOperation, dependency.ID)
 		}
-		if _, duplicate := seen[dependency]; duplicate {
-			return Operation{}, fmt.Errorf("%w: duplicate dependency %q", ErrInvalidOperation, dependency)
+		if _, duplicate := seen[dependency.ID]; duplicate {
+			return Operation{}, fmt.Errorf("%w: duplicate dependency %q", ErrInvalidOperation, dependency.ID)
 		}
-		seen[dependency] = struct{}{}
+		seen[dependency.ID] = struct{}{}
 	}
 	return Operation{spec: cloneSpec(spec)}, nil
 }
@@ -195,6 +212,7 @@ func (operation Operation) Spec() OperationSpec { return cloneSpec(operation.spe
 
 func cloneSpec(spec OperationSpec) OperationSpec {
 	spec.Tags = slices.Clone(spec.Tags)
+	spec.DependencyRefs = slices.Clone(spec.DependencyRefs)
 	spec.Dependencies = slices.Clone(spec.Dependencies)
 	spec.Environments = slices.Clone(spec.Environments)
 	return spec

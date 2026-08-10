@@ -322,7 +322,7 @@ func TestStorePinsDependencyEligibilityToExactIdentity(t *testing.T) {
 		t.Helper()
 		claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
 			Candidates: []sequencer.ClaimCandidate{{ID: "dependency", Version: version, Checksum: checksum}},
-			Owner: "owner", Now: now, LeaseDuration: time.Second,
+			Owner:      "owner", Now: now, LeaseDuration: time.Second,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -337,14 +337,14 @@ func TestStorePinsDependencyEligibilityToExactIdentity(t *testing.T) {
 	complete(2, "sha256:dependency-v2")
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
 		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum}},
-		Owner: "owner", Now: now, LeaseDuration: time.Second,
+		Owner:      "owner", Now: now, LeaseDuration: time.Second,
 	}); !errors.Is(err, sequencer.ErrNoEligibleOperation) {
 		t.Fatalf("dependent claimed after only newer dependency succeeded: %v", err)
 	}
 	complete(1, "sha256:dependency-v1")
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
 		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum}},
-		Owner: "owner", Now: now, LeaseDuration: time.Second,
+		Owner:      "owner", Now: now, LeaseDuration: time.Second,
 	}); err != nil {
 		t.Fatalf("dependent not claimed after exact dependency succeeded: %v", err)
 	}

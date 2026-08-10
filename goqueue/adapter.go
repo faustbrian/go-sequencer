@@ -67,7 +67,9 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Me
 	return message, nil
 }
 
-// Executor performs a ledger-owned attempt for one redelivered message.
+// Executor performs a ledger-owned attempt for one redelivered message. A nil
+// error confirms durable completion, ErrUnknownResult leaves the result
+// unsettled, and every other error is a definite failure.
 type Executor interface {
 	ExecuteMessage(context.Context, Message) error
 }
@@ -76,7 +78,7 @@ type Executor interface {
 // Implementations bind these operations to the delivery being handled.
 type Settlement interface {
 	Acknowledge(context.Context) error
-	Reject(context.Context, error) error
+	Reject(context.Context) error
 }
 
 // Disposition reports whether a delivery was durably settled.
@@ -126,7 +128,7 @@ func (worker *Worker) HandleDelivery(ctx context.Context, message Message, settl
 		}
 		return Acknowledged, nil
 	}
-	if err := settlement.Reject(ctx, executionErr); err != nil {
+	if err := settlement.Reject(ctx); err != nil {
 		return Unsettled, errors.Join(executionErr, err)
 	}
 	return Rejected, executionErr

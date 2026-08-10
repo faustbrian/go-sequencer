@@ -95,7 +95,7 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 		}
 		first, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
 			Candidates: []sequencer.ClaimCandidate{{ID: id, Version: 1, Checksum: "sha256:" + source.String()}},
-			Owner: "first", LeaseDuration: time.Minute,
+			Owner:      "first", LeaseDuration: time.Minute,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -108,7 +108,7 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 		}
 		if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
 			Candidates: []sequencer.ClaimCandidate{{ID: id, Version: 1, Checksum: "sha256:" + source.String()}},
-			Owner: "second", LeaseDuration: time.Minute,
+			Owner:      "second", LeaseDuration: time.Minute,
 		}); err != nil {
 			t.Fatal(err)
 		}

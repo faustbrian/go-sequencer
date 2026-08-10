@@ -3,6 +3,7 @@ package sequencer
 import (
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // PlanOptions contains explicit graph resource bounds.
@@ -46,9 +47,13 @@ func CompilePlan(specs []OperationSpec, options PlanOptions) (*Plan, error) {
 		byID[spec.ID] = operation
 	}
 	for id, operation := range byID {
-		for _, dependency := range operation.spec.Dependencies {
-			if _, exists := byID[dependency]; !exists {
-				return nil, fmt.Errorf("%w: %s requires %s", ErrMissingDependency, id, dependency)
+		for _, dependency := range operation.spec.DependencyRefs {
+			target, exists := byID[dependency.ID]
+			if !exists {
+				return nil, fmt.Errorf("%w: %s requires %s", ErrMissingDependency, id, dependency.ID)
+			}
+			if target.spec.Version != dependency.Version || target.spec.Checksum != dependency.Checksum {
+				return nil, fmt.Errorf("%w: %s requires %s version %d", ErrDefinitionDrift, id, dependency.ID, dependency.Version)
 			}
 		}
 	}
@@ -72,10 +77,12 @@ func CompilePlan(specs []OperationSpec, options PlanOptions) (*Plan, error) {
 			return nil
 		}
 		states[id] = 1
-		dependencies := slices.Clone(byID[id].spec.Dependencies)
-		slices.Sort(dependencies)
+		dependencies := slices.Clone(byID[id].spec.DependencyRefs)
+		slices.SortFunc(dependencies, func(left, right DependencyRef) int {
+			return strings.Compare(string(left.ID), string(right.ID))
+		})
 		for _, dependency := range dependencies {
-			if err := visit(dependency, depth+1); err != nil {
+			if err := visit(dependency.ID, depth+1); err != nil {
 				return err
 			}
 		}

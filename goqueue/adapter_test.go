@@ -98,9 +98,6 @@ func TestWorkerSettlesOnlyConfirmedExecutionOutcomes(t *testing.T) {
 			if settlement.acknowledged != test.wantAck || settlement.rejected != test.wantReject {
 				t.Fatalf("settlement = acknowledged:%t rejected:%t", settlement.acknowledged, settlement.rejected)
 			}
-			if test.wantReject && !errors.Is(settlement.cause, test.executionErr) {
-				t.Fatalf("rejection cause = %v", settlement.cause)
-			}
 		})
 	}
 }
@@ -241,7 +238,6 @@ type executorStub struct {
 type settlementStub struct {
 	acknowledged bool
 	rejected     bool
-	cause        error
 	ackErr       error
 	rejectErr    error
 }
@@ -251,9 +247,8 @@ func (settlement *settlementStub) Acknowledge(context.Context) error {
 	return settlement.ackErr
 }
 
-func (settlement *settlementStub) Reject(_ context.Context, cause error) error {
+func (settlement *settlementStub) Reject(context.Context) error {
 	settlement.rejected = true
-	settlement.cause = cause
 	return settlement.rejectErr
 }
 

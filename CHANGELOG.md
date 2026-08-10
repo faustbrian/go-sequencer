@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Bound idempotency completion/failure and fenced-lease release calls with
+  cancellation-detached cleanup deadlines. Existing constructors use a
+  five-second default; callers may select a validated bound up to one minute.
 - Preserve queue delivery identity when publish admission is unknown, and add
   explicit acknowledgement, rejection, and unsettled worker dispositions.
 - Add leaderless fleet lifecycle, readiness, fenced lease renewal, bounded

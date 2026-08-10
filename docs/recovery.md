@@ -12,6 +12,12 @@ Stale owners cannot complete or reset current work. PostgreSQL claim selection
 uses row locking with `SKIP LOCKED`, server time, and transactional projection,
 attempt, and audit writes.
 
+`goidempotency` terminal updates and `golease` releases detach from caller
+cancellation so accepted cleanup still runs, but every call retains an explicit
+deadline. `New` uses a five-second bound; `NewWithCleanupTimeout` accepts a
+positive bound up to one minute. Cleanup failures remain joined with the
+primary execution failure.
+
 | Crash boundary | Durable recovery outcome |
 |---|---|
 | before registration or claim | no accepted attempt; eligible work remains |

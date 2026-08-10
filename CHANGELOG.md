@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Preserve queue delivery identity when publish admission is unknown, and add
+  explicit acknowledgement, rejection, and unsettled worker dispositions.
 - Add leaderless fleet lifecycle, readiness, fenced lease renewal, bounded
   drain, exact mixed-binary claim candidates, and explicit cooperative versus
   drain-only cancellation semantics.

@@ -38,19 +38,35 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	migration, err := fs.ReadFile(sequencerpostgres.Migrations(), "00001_create_sequencer_ledger.sql")
-	if err != nil {
+	applyMigration(t, ctx, pool, "00001_create_sequencer_ledger.sql")
+	if _, err := pool.Exec(ctx, `
+INSERT INTO sequencer_operations (
+    operation_id, version, checksum, dependencies, state, eligible_at,
+    created_at, updated_at
+) VALUES
+    ('migration.empty', 1, 'sha256:empty', '{}', 'eligible', clock_timestamp(), clock_timestamp(), clock_timestamp()),
+    ('migration.legacy', 1, 'sha256:legacy', ARRAY['schema'], 'eligible', clock_timestamp(), clock_timestamp(), clock_timestamp())`); err != nil {
 		t.Fatal(err)
 	}
-	up := strings.Split(string(migration), "-- +goose Down")[0]
-	if _, err := pool.Exec(ctx, up); err != nil {
-		t.Fatalf("apply migration: %v", err)
+	applyMigration(t, ctx, pool, "00002_pin_dependency_definitions.sql")
+	var emptyRefs, legacyRefs *string
+	if err := pool.QueryRow(ctx, `
+SELECT dependency_refs::text FROM sequencer_operations WHERE operation_id = 'migration.empty'`).Scan(&emptyRefs); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT dependency_refs::text FROM sequencer_operations WHERE operation_id = 'migration.legacy'`).Scan(&legacyRefs); err != nil {
+		t.Fatal(err)
+	}
+	if emptyRefs == nil || *emptyRefs != "[]" || legacyRefs != nil {
+		t.Fatalf("expanded dependency refs: empty=%v legacy=%v", emptyRefs, legacyRefs)
 	}
 	store, err := sequencerpostgres.New(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration := sequencer.Registration{ID: "postal.backfill", Version: 1, Checksum: "sha256:postal", Dependencies: []sequencer.OperationID{"schema"}}
+	schemaV1 := sequencer.DependencyRef{ID: "schema", Version: 1, Checksum: "sha256:schema"}
+	registration := sequencer.Registration{ID: "postal.backfill", Version: 1, Checksum: "sha256:postal", DependencyRefs: []sequencer.DependencyRef{schemaV1}}
 	if err := store.Register(ctx, []sequencer.Registration{{ID: "schema", Version: 1, Checksum: "sha256:schema"}}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -75,17 +91,39 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	if err := store.Complete(ctx, sequencer.Completion{Ownership: schemaClaim.Ownership(), State: sequencer.Succeeded}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: "migration.legacy", Version: 1, Checksum: "sha256:legacy"}},
+		Owner:      "legacy-before-resolution", LeaseDuration: time.Minute,
+	}); !errors.Is(err, sequencer.ErrNoEligibleOperation) {
+		t.Fatalf("unresolved legacy ClaimNext() error = %v", err)
+	}
+	if err := store.Register(ctx, []sequencer.Registration{{
+		ID: "migration.legacy", Version: 1, Checksum: "sha256:legacy",
+		DependencyRefs: []sequencer.DependencyRef{schemaV1},
+	}}, time.Now()); err != nil {
+		t.Fatalf("resolve legacy dependencies: %v", err)
+	}
+	legacyClaim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: "migration.legacy", Version: 1, Checksum: "sha256:legacy"}},
+		Owner:      "legacy-after-resolution", LeaseDuration: time.Minute,
+	})
+	if err != nil || legacyClaim.Attempt.OperationID != "migration.legacy" {
+		t.Fatalf("resolved legacy claim = %+v, %v", legacyClaim, err)
+	}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Register(ctx, []sequencer.Registration{{
 		ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum,
-		Dependencies: []sequencer.OperationID{"other-schema"},
+		DependencyRefs: []sequencer.DependencyRef{{ID: "schema", Version: 2, Checksum: "sha256:schema-v2"}},
 	}}, time.Now()); !errors.Is(err, sequencer.ErrDefinitionDrift) {
 		t.Fatalf("dependency drift error = %v", err)
 	}
 	if err := store.Register(ctx, []sequencer.Registration{{ID: registration.ID, Version: 1, Checksum: "sha256:drift"}}, time.Now()); !errors.Is(err, sequencer.ErrChecksumDrift) {
 		t.Fatalf("checksum drift error = %v", err)
+	}
+	if err := store.Register(ctx, []sequencer.Registration{{ID: "schema", Version: 2, Checksum: "sha256:schema-v2"}}, time.Now()); err != nil {
+		t.Fatal(err)
 	}
 
 	for _, source := range []sequencer.State{sequencer.Retryable, sequencer.Deferred} {
@@ -229,5 +267,17 @@ func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	}
 	if err := store.Complete(ctx, sequencer.Completion{Ownership: oldClaim.Ownership(), State: sequencer.Succeeded}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func applyMigration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name string) {
+	t.Helper()
+	migration, err := fs.ReadFile(sequencerpostgres.Migrations(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := strings.Split(string(migration), "-- +goose Down")[0]
+	if _, err := pool.Exec(ctx, up); err != nil {
+		t.Fatalf("apply migration %s: %v", name, err)
 	}
 }

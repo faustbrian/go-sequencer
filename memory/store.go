@@ -67,7 +67,7 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 		registration.Dependencies = slices.Clone(registration.Dependencies)
 		identifier := key{registration.ID, registration.Version}
 		if pending, exists := normalized[identifier]; exists {
-			if pending.Checksum != registration.Checksum || !slices.Equal(pending.DependencyRefs, registration.DependencyRefs) {
+			if pending.Checksum != registration.Checksum || pending.Channel != registration.Channel || !slices.Equal(pending.DependencyRefs, registration.DependencyRefs) {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
 			}
 			continue
@@ -76,7 +76,7 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 			if current.record.Checksum != registration.Checksum {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, registration.ID, registration.Version)
 			}
-			if !slices.Equal(current.record.DependencyRefs, registration.DependencyRefs) {
+			if current.record.Channel != registration.Channel || !slices.Equal(current.record.DependencyRefs, registration.DependencyRefs) {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
 			}
 			continue
@@ -119,6 +119,9 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		}
 		if current != nil && candidate.Checksum != "" && current.record.Checksum != candidate.Checksum {
 			return sequencer.Claim{}, fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, candidate.ID, candidate.Version)
+		}
+		if current != nil && candidate.Channel != "" && current.record.Channel != candidate.Channel {
+			return sequencer.Claim{}, fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, candidate.ID, candidate.Version)
 		}
 		if current == nil || current.record.EligibleAt.After(request.Now) || !store.dependenciesSucceeded(current.record.DependencyRefs) {
 			continue

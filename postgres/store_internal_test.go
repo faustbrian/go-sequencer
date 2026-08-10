@@ -130,7 +130,10 @@ func TestStoreRegisterComparesCanonicalDependencyOrder(t *testing.T) {
 	}})
 	if err := store.Register(context.Background(), []sequencer.Registration{{
 		ID: "operation", Version: 1, Checksum: "sum",
-		Dependencies: []sequencer.OperationID{"a", "b"},
+		DependencyRefs: []sequencer.DependencyRef{
+			{ID: "a", Version: 1, Checksum: "a-sum"},
+			{ID: "b", Version: 2, Checksum: "b-sum"},
+		},
 	}}, time.Now()); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}

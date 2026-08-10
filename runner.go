@@ -131,6 +131,27 @@ type Runner struct {
 	options RunnerOptions
 }
 
+func runsChannel(channels []string, channel string) bool {
+	return len(channels) == 0 || slices.Contains(channels, channel)
+}
+
+func (runner *Runner) reportChannels() []string {
+	if len(runner.options.Channels) > 0 {
+		return slices.Clone(runner.options.Channels)
+	}
+	channels := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, operation := range runner.plan.operations {
+		if _, exists := seen[operation.spec.Channel]; exists {
+			continue
+		}
+		seen[operation.spec.Channel] = struct{}{}
+		channels = append(channels, operation.spec.Channel)
+	}
+	slices.Sort(channels)
+	return channels
+}
+
 // NewRunner validates execution dependencies and declared constraints.
 func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) {
 	if plan == nil || store == nil || options.Owner == "" {
@@ -190,7 +211,7 @@ func (runner *Runner) Execute(ctx context.Context) (Report, error) {
 	for _, operation := range runner.plan.operations {
 		registrations = append(registrations, Registration{
 			ID: operation.spec.ID, Version: operation.spec.Version,
-			Checksum:       operation.spec.Checksum, Channel: operation.spec.Channel,
+			Checksum: operation.spec.Checksum, Channel: operation.spec.Channel,
 			DependencyRefs: slices.Clone(operation.spec.DependencyRefs),
 		})
 	}

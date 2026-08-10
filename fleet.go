@@ -167,9 +167,11 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 	for _, operation := range fleet.plan.operations {
 		registrations = append(registrations, Registration{
 			ID: operation.spec.ID, Version: operation.spec.Version,
-			Checksum: operation.spec.Checksum, DependencyRefs: slices.Clone(operation.spec.DependencyRefs),
+			Checksum: operation.spec.Checksum, Channel: operation.spec.Channel, DependencyRefs: slices.Clone(operation.spec.DependencyRefs),
 		})
-		candidates = append(candidates, ClaimCandidate{ID: operation.spec.ID, Version: operation.spec.Version, Checksum: operation.spec.Checksum})
+		if runsChannel(fleet.options.Channels, operation.spec.Channel) {
+			candidates = append(candidates, ClaimCandidate{ID: operation.spec.ID, Version: operation.spec.Version, Checksum: operation.spec.Checksum, Channel: operation.spec.Channel})
+		}
 	}
 	if err := fleet.store.Register(ctx, registrations, fleet.options.Clock.Now()); err != nil {
 		if isRunCancellation(ctx, err) {
@@ -278,7 +280,7 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 			return ErrInvalidOperation
 		}
 		active, _ = bits.Add64(active, 1, 0)
-		fleet.observe(Event{Type: EventClaimed, Operation: claim.Attempt.OperationID, Attempt: claim.Attempt.Number, State: Claimed, At: now})
+		fleet.observe(Event{Type: EventClaimed, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Claimed, At: now})
 		fleet.renewalStarts.Add(1)
 		fleet.workers.Go(func() {
 			results <- fleet.executeClaim(workContext, renewalContext, operation, claim)
@@ -367,7 +369,7 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 		return fmt.Errorf("sequencer: mark accepted attempt running: %w", err)
 	}
 	close(renewalReady)
-	fleet.observe(Event{Type: EventRunning, Operation: claim.Attempt.OperationID, Attempt: claim.Attempt.Number, State: Running, At: now})
+	fleet.observe(Event{Type: EventRunning, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Running, At: now})
 
 	worker := &Runner{options: fleet.options.RunnerOptions}
 	output, actor, reason, executionErr := worker.runAttempt(attemptContext, operation.spec, claim.Attempt)
@@ -394,7 +396,7 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 	if err := fleet.store.Complete(completionContext, completion); err != nil {
 		return fmt.Errorf("sequencer: complete accepted attempt: %w", err)
 	}
-	fleet.observe(Event{Type: EventCompleted, Operation: claim.Attempt.OperationID, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
+	fleet.observe(Event{Type: EventCompleted, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
 	return nil
 }
 

@@ -25,6 +25,20 @@ func TestMigrationsExposeVersionedDurableLedger(t *testing.T) {
 	}
 }
 
+func TestMigrationsExposePinnedDependencyExpansion(t *testing.T) {
+	t.Parallel()
+
+	data, err := fs.ReadFile(postgres.Migrations(), "00002_pin_dependency_definitions.sql")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	for _, required := range []string{"dependency_refs", "jsonb", "cardinality(dependencies) = 0"} {
+		if !strings.Contains(string(data), required) {
+			t.Errorf("migration missing %q", required)
+		}
+	}
+}
+
 func TestNewRequiresPool(t *testing.T) {
 	t.Parallel()
 

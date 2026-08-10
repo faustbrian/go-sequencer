@@ -6,9 +6,12 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"regexp"
 
 	sequencer "github.com/faustbrian/golib/pkg/sequencer"
 )
+
+var channelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
 
 var (
 	// ErrInvalidAdapter reports incomplete asynchronous dependencies or messages.
@@ -23,6 +26,7 @@ type Request struct {
 	OperationID sequencer.OperationID `json:"operation_id"`
 	Version     uint                  `json:"version"`
 	Checksum    string                `json:"checksum"`
+	Channel     string                `json:"channel,omitempty"`
 }
 
 // Message is a payload-free durable queue command. Queue redelivery is safe
@@ -31,6 +35,7 @@ type Message struct {
 	OperationID sequencer.OperationID `json:"operation_id"`
 	Version     uint                  `json:"version"`
 	Checksum    string                `json:"checksum"`
+	Channel     string                `json:"channel,omitempty"`
 	DeliveryID  string                `json:"delivery_id"`
 }
 
@@ -44,6 +49,20 @@ type Publisher interface {
 type Dispatcher struct {
 	publisher Publisher
 	topic     string
+	channel   string
+}
+
+// NewChannelDispatcher binds a semantic operation channel to one transport topic.
+func NewChannelDispatcher(publisher Publisher, channel, topic string) (*Dispatcher, error) {
+	if !channelPattern.MatchString(channel) {
+		return nil, ErrInvalidAdapter
+	}
+	dispatcher, err := NewDispatcher(publisher, topic)
+	if err != nil {
+		return nil, err
+	}
+	dispatcher.channel = channel
+	return dispatcher, nil
 }
 
 // NewDispatcher validates asynchronous transport dependencies.
@@ -57,10 +76,12 @@ func NewDispatcher(publisher Publisher, topic string) (*Dispatcher, error) {
 // Dispatch publishes an operation command. It never claims cross-operation
 // or enqueue-to-worker transaction atomicity.
 func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Message, error) {
-	if request.OperationID == "" || request.Version == 0 || request.Checksum == "" {
+	if request.OperationID == "" || request.Version == 0 || request.Checksum == "" ||
+		(request.Channel != "" && !channelPattern.MatchString(request.Channel)) ||
+		(dispatcher.channel != "" && request.Channel != dispatcher.channel) {
 		return Message{}, ErrInvalidAdapter
 	}
-	message := Message{OperationID: request.OperationID, Version: request.Version, Checksum: request.Checksum, DeliveryID: rand.Text()}
+	message := Message{OperationID: request.OperationID, Version: request.Version, Checksum: request.Checksum, Channel: request.Channel, DeliveryID: rand.Text()}
 	if err := dispatcher.publisher.Publish(ctx, dispatcher.topic, message); err != nil {
 		return message, errors.Join(ErrPublishOutcomeUnknown, err)
 	}
@@ -94,7 +115,10 @@ const (
 )
 
 // Worker validates queue input and invokes the durable executor.
-type Worker struct{ executor Executor }
+type Worker struct {
+	executor Executor
+	channel  string
+}
 
 // NewWorker constructs an explicit worker handler; it starts no goroutines.
 func NewWorker(executor Executor) (*Worker, error) {
@@ -104,9 +128,22 @@ func NewWorker(executor Executor) (*Worker, error) {
 	return &Worker{executor: executor}, nil
 }
 
+// NewChannelWorker binds a worker to exactly one semantic operation channel.
+func NewChannelWorker(channel string, executor Executor) (*Worker, error) {
+	if !channelPattern.MatchString(channel) {
+		return nil, ErrInvalidAdapter
+	}
+	worker, err := NewWorker(executor)
+	if err != nil {
+		return nil, err
+	}
+	worker.channel = channel
+	return worker, nil
+}
+
 // Handle processes one queue delivery under ledger-owned idempotency.
 func (worker *Worker) Handle(ctx context.Context, message Message) error {
-	if !validMessage(message) {
+	if !validMessage(message, worker.channel) {
 		return ErrInvalidAdapter
 	}
 	return worker.executor.ExecuteMessage(ctx, message)
@@ -115,7 +152,7 @@ func (worker *Worker) Handle(ctx context.Context, message Message) error {
 // HandleDelivery executes and settles one delivery. Commit-unknown execution
 // and unconfirmed settlement remain unsettled so the transport may redeliver.
 func (worker *Worker) HandleDelivery(ctx context.Context, message Message, settlement Settlement) (Disposition, error) {
-	if !validMessage(message) || settlement == nil {
+	if !validMessage(message, worker.channel) || settlement == nil {
 		return Unsettled, ErrInvalidAdapter
 	}
 	executionErr := worker.executor.ExecuteMessage(ctx, message)
@@ -134,6 +171,12 @@ func (worker *Worker) HandleDelivery(ctx context.Context, message Message, settl
 	return Rejected, executionErr
 }
 
-func validMessage(message Message) bool {
-	return message.OperationID != "" && message.Version != 0 && message.Checksum != "" && message.DeliveryID != ""
+func validMessage(message Message, expectedChannel string) bool {
+	if message.OperationID == "" || message.Version == 0 || message.Checksum == "" || message.DeliveryID == "" {
+		return false
+	}
+	if expectedChannel != "" {
+		return message.Channel == expectedChannel
+	}
+	return message.Channel == "" || channelPattern.MatchString(message.Channel)
 }

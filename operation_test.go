@@ -115,7 +115,11 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 		{name: "missing id", spec: validSpec("")},
 		{name: "missing checksum", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Checksum = ""; return s }()},
 		{name: "invalid channel", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Channel = "Deploy Queue"; return s }()},
-		{name: "channel overflow", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Channel = "a" + strings.Repeat("b", 255); return s }()},
+		{name: "channel overflow", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.Channel = "a" + strings.Repeat("b", 255)
+			return s
+		}()},
 		{name: "missing handler", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Handler = nil; return s }()},
 		{name: "unbounded attempts", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Policy.MaxAttempts = 0; return s }()},
 		{name: "unbounded exceptions", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Policy.MaxExceptions = 0; return s }()},

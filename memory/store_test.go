@@ -319,7 +319,9 @@ func TestStoreRejectsRegistrationAndClaimChannelDrift(t *testing.T) {
 	store := memory.New()
 	now := time.Now()
 	registration := sequencer.Registration{ID: "operation", Version: 1, Checksum: "sum", Channel: "deploy"}
-	if err := store.Register(context.Background(), []sequencer.Registration{registration}, now); err != nil { t.Fatal(err) }
+	if err := store.Register(context.Background(), []sequencer.Registration{registration}, now); err != nil {
+		t.Fatal(err)
+	}
 	drifted := registration
 	drifted.Channel = "maintenance"
 	if err := store.Register(context.Background(), []sequencer.Registration{drifted}, now); !errors.Is(err, sequencer.ErrDefinitionDrift) {
@@ -327,7 +329,7 @@ func TestStoreRejectsRegistrationAndClaimChannelDrift(t *testing.T) {
 	}
 	_, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{
 		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum, Channel: "maintenance"}},
-		Owner: "owner", Now: now, LeaseDuration: time.Minute,
+		Owner:      "owner", Now: now, LeaseDuration: time.Minute,
 	})
 	if !errors.Is(err, sequencer.ErrDefinitionDrift) {
 		t.Fatalf("ClaimNext(channel drift) error = %v", err)

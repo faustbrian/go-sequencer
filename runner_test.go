@@ -740,10 +740,14 @@ func TestRunnerFiltersChannelsButRegistersCompleteCrossChannelPlan(t *testing.T)
 		return sequencer.Output{}, nil
 	})
 	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{dependent, dependency}, sequencer.PlanOptions{})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := memory.New()
 	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "data-runner", Channels: []string{"data"}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	report, err := runner.Execute(context.Background())
 	if !errors.Is(err, sequencer.ErrNoEligibleOperation) || called {
 		t.Fatalf("Execute() = %+v, %v; dependent called = %t", report, err, called)

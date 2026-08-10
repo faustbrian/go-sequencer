@@ -43,9 +43,11 @@ type Controller interface {
 	Reset(context.Context, ResetRequest) error
 }
 
-// Authorizer is implemented by the application security boundary.
+// Authorizer is implemented by the application security boundary. Authorize
+// returns the stable, non-empty principal that was authenticated and
+// authorized for the action and resource.
 type Authorizer interface {
-	Authorize(context.Context, Action, string) error
+	Authorize(context.Context, Action, string) (string, error)
 }
 
 // Handler exposes inspect, execute, and reset controls.
@@ -78,7 +80,7 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 }
 
 func (handler *Handler) execute(response http.ResponseWriter, request *http.Request) {
-	if !handler.authorized(response, request, ActionExecute, "") {
+	if _, ok := handler.authorized(response, request, ActionExecute, ""); !ok {
 		return
 	}
 	if err := handler.controller.Execute(request.Context()); err != nil {
@@ -98,7 +100,7 @@ func (handler *Handler) inspect(response http.ResponseWriter, request *http.Requ
 		http.NotFound(response, request)
 		return
 	}
-	if !handler.authorized(response, request, ActionInspect, id) {
+	if _, ok := handler.authorized(response, request, ActionInspect, id); !ok {
 		return
 	}
 	version, err := strconv.ParseUint(
@@ -131,7 +133,8 @@ func (handler *Handler) reset(response http.ResponseWriter, request *http.Reques
 		http.NotFound(response, request)
 		return
 	}
-	if !handler.authorized(response, request, ActionReset, id) {
+	principal, ok := handler.authorized(response, request, ActionReset, id)
+	if !ok {
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBytes)
@@ -142,7 +145,12 @@ func (handler *Handler) reset(response http.ResponseWriter, request *http.Reques
 		writeError(response, http.StatusBadRequest)
 		return
 	}
+	if reset.Actor != principal {
+		writeError(response, http.StatusForbidden)
+		return
+	}
 	reset.OperationID = id
+	reset.Actor = principal
 	if err := handler.controller.Reset(request.Context(), reset); err != nil {
 		writeError(response, http.StatusConflict)
 		return
@@ -150,12 +158,13 @@ func (handler *Handler) reset(response http.ResponseWriter, request *http.Reques
 	response.WriteHeader(http.StatusAccepted)
 }
 
-func (handler *Handler) authorized(response http.ResponseWriter, request *http.Request, action Action, id string) bool {
-	if err := handler.authorizer.Authorize(request.Context(), action, id); err != nil {
+func (handler *Handler) authorized(response http.ResponseWriter, request *http.Request, action Action, id string) (string, bool) {
+	principal, err := handler.authorizer.Authorize(request.Context(), action, id)
+	if err != nil || principal == "" {
 		writeError(response, http.StatusForbidden)
-		return false
+		return "", false
 	}
-	return true
+	return principal, true
 }
 
 func writeError(response http.ResponseWriter, status int) {

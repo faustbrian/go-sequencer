@@ -708,6 +708,9 @@ func TestRunnerConstructorValidation(t *testing.T) {
 	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", LeaseDuration: -time.Second}); !errors.Is(err, sequencer.ErrInvalidRunner) {
 		t.Fatalf("negative lease error = %v", err)
 	}
+	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", Channels: []string{"missing"}}); !errors.Is(err, sequencer.ErrInvalidRunner) {
+		t.Fatalf("unknown channel error = %v", err)
+	}
 	observers := make([]sequencer.Observer, 129)
 	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", Observers: observers}); !errors.Is(err, sequencer.ErrInvalidRunner) {
 		t.Fatalf("observer limit error = %v", err)
@@ -720,6 +723,37 @@ func TestRunnerConstructorValidation(t *testing.T) {
 	plan, _ = sequencer.CompilePlan([]sequencer.OperationSpec{transactional}, sequencer.PlanOptions{})
 	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner"}); !errors.Is(err, sequencer.ErrInvalidRunner) {
 		t.Fatalf("transaction manager error = %v", err)
+	}
+}
+
+func TestRunnerFiltersChannelsButRegistersCompleteCrossChannelPlan(t *testing.T) {
+	t.Parallel()
+
+	dependency := validSpec("schema")
+	dependency.Channel = "schema"
+	dependent := validSpec("backfill")
+	dependent.Channel = "data"
+	dependent.DependencyRefs = []sequencer.DependencyRef{referenceTo(dependency)}
+	called := false
+	dependent.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		called = true
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{dependent, dependency}, sequencer.PlanOptions{})
+	if err != nil { t.Fatal(err) }
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "data-runner", Channels: []string{"data"}})
+	if err != nil { t.Fatal(err) }
+	report, err := runner.Execute(context.Background())
+	if !errors.Is(err, sequencer.ErrNoEligibleOperation) || called {
+		t.Fatalf("Execute() = %+v, %v; dependent called = %t", report, err, called)
+	}
+	dependencyRecord, snapshotErr := store.Snapshot(context.Background(), dependency.ID, dependency.Version)
+	if snapshotErr != nil || dependencyRecord.Channel != "schema" {
+		t.Fatalf("complete plan was not registered: %+v, %v", dependencyRecord, snapshotErr)
+	}
+	if len(report.Channels) != 1 || report.Channels[0] != "data" || len(report.Operations) != 1 || report.Operations[0].Channel != "data" {
+		t.Fatalf("scoped report = %+v", report)
 	}
 }
 

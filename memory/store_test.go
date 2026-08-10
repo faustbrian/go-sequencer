@@ -313,6 +313,27 @@ func TestStoreRegistrationIsAtomicAndRejectsDependencyDrift(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsRegistrationAndClaimChannelDrift(t *testing.T) {
+	t.Parallel()
+
+	store := memory.New()
+	now := time.Now()
+	registration := sequencer.Registration{ID: "operation", Version: 1, Checksum: "sum", Channel: "deploy"}
+	if err := store.Register(context.Background(), []sequencer.Registration{registration}, now); err != nil { t.Fatal(err) }
+	drifted := registration
+	drifted.Channel = "maintenance"
+	if err := store.Register(context.Background(), []sequencer.Registration{drifted}, now); !errors.Is(err, sequencer.ErrDefinitionDrift) {
+		t.Fatalf("Register(channel drift) error = %v", err)
+	}
+	_, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum, Channel: "maintenance"}},
+		Owner: "owner", Now: now, LeaseDuration: time.Minute,
+	})
+	if !errors.Is(err, sequencer.ErrDefinitionDrift) {
+		t.Fatalf("ClaimNext(channel drift) error = %v", err)
+	}
+}
+
 func TestStoreCanonicalizesExactDependencyOrder(t *testing.T) {
 	t.Parallel()
 

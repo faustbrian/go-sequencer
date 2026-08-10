@@ -31,6 +31,28 @@ func TestDispatcherPublishesIdentityOnlyMessage(t *testing.T) {
 	}
 }
 
+func TestChannelBoundDispatcherAndWorkerRejectCrossChannelMessages(t *testing.T) {
+	t.Parallel()
+
+	publisher := &publisherStub{}
+	dispatcher, err := goqueue.NewChannelDispatcher(publisher, "deploy", "deployments")
+	if err != nil { t.Fatal(err) }
+	request := goqueue.Request{OperationID: "a", Version: 1, Checksum: "sum", Channel: "maintenance"}
+	if _, err := dispatcher.Dispatch(context.Background(), request); !errors.Is(err, goqueue.ErrInvalidAdapter) {
+		t.Fatalf("Dispatch(channel mismatch) error = %v", err)
+	}
+	request.Channel = "deploy"
+	message, err := dispatcher.Dispatch(context.Background(), request)
+	if err != nil || message.Channel != "deploy" { t.Fatalf("Dispatch() = %+v, %v", message, err) }
+	executor := &executorStub{}
+	worker, err := goqueue.NewChannelWorker("deploy", executor)
+	if err != nil { t.Fatal(err) }
+	message.Channel = "maintenance"
+	if err := worker.Handle(context.Background(), message); !errors.Is(err, goqueue.ErrInvalidAdapter) || executor.message.OperationID != "" {
+		t.Fatalf("Handle(cross-channel) error = %v, executor message = %+v", err, executor.message)
+	}
+}
+
 func TestDispatcherPreservesDeliveryIdentityWhenPublishOutcomeIsUnknown(t *testing.T) {
 	t.Parallel()
 

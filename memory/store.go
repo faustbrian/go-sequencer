@@ -368,28 +368,27 @@ func (store *Store) RecoverExpired(ctx context.Context, now time.Time) (int, err
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	recovered := 0
-	for recovered < sequencer.DefaultRecoveryBatchSize {
+	for range sequencer.DefaultRecoveryBatchSize {
 		identifier, ok := store.popExpiredLease(now)
-		if !ok {
-			break
+		if ok {
+			current := store.entries[identifier]
+			from := current.record.State
+			attempt := &current.attempts[len(current.attempts)-1]
+			attempt.State = sequencer.Indeterminate
+			attempt.CompletedAt = now
+			attempt.ErrorDetail = sequencer.ErrUnknownResult.Error()
+			current.record.State = sequencer.Indeterminate
+			current.record.LeaseExpiresAt = time.Time{}
+			current.record.UpdatedAt = now
+			current.appendAudit(from, sequencer.Indeterminate, now, "system", "lease expired; outcome unknown")
+			if current.record.UnknownOutcome == sequencer.UnknownOutcomeReplayIdempotent {
+				current.record.State = sequencer.Eligible
+				current.record.EligibleAt = now
+				current.appendAudit(sequencer.Indeterminate, sequencer.Eligible, now, "system", "idempotent replay authorized")
+			}
+			current.record.Owner = ""
+			recovered++
 		}
-		current := store.entries[identifier]
-		from := current.record.State
-		attempt := &current.attempts[len(current.attempts)-1]
-		attempt.State = sequencer.Indeterminate
-		attempt.CompletedAt = now
-		attempt.ErrorDetail = sequencer.ErrUnknownResult.Error()
-		current.record.State = sequencer.Indeterminate
-		current.record.LeaseExpiresAt = time.Time{}
-		current.record.UpdatedAt = now
-		current.appendAudit(from, sequencer.Indeterminate, now, "system", "lease expired; outcome unknown")
-		if current.record.UnknownOutcome == sequencer.UnknownOutcomeReplayIdempotent {
-			current.record.State = sequencer.Eligible
-			current.record.EligibleAt = now
-			current.appendAudit(sequencer.Indeterminate, sequencer.Eligible, now, "system", "idempotent replay authorized")
-		}
-		current.record.Owner = ""
-		recovered++
 	}
 	return recovered, nil
 }

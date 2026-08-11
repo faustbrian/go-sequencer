@@ -62,6 +62,8 @@
 
 ### Fixed
 
+- Close claim admission atomically when lease ownership fails, and cancel a
+  claim returned across that boundary without invoking its handler.
 - Treat persisted skips as completed one-time outcomes on later synchronous
   runs instead of attempting an impossible second claim.
 - Align the public transition model with audited claimed-attempt recovery and

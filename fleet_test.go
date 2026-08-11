@@ -253,6 +253,179 @@ func TestFleetFailsReadinessWhenUncooperativeHandlerOutlivesLease(t *testing.T) 
 	}
 }
 
+func TestFleetDoesNotStartClaimReturnedAfterLeaseFailureClosesAdmission(t *testing.T) {
+	settlementFailure := errors.New("settlement unavailable")
+	for _, test := range []struct {
+		name          string
+		settlementErr error
+		wantState     sequencer.State
+	}{
+		{name: "settled", wantState: sequencer.Canceled},
+		{name: "settlement failure", settlementErr: settlementFailure, wantState: sequencer.Claimed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			firstStarted := make(chan struct{})
+			releaseFirst := make(chan struct{})
+			defer close(releaseFirst)
+			secondStarted := make(chan struct{}, 1)
+			completed := make(chan sequencer.Event, 1)
+			first := validSpec("fleet.admission.first")
+			first.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+				close(firstStarted)
+				<-releaseFirst
+				return sequencer.Output{}, nil
+			})
+			second := validSpec("fleet.admission.second")
+			second.Channel = "critical"
+			second.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+				secondStarted <- struct{}{}
+				return sequencer.Output{}, nil
+			})
+			plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{first, second}, sequencer.PlanOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := &leaseFailureAdmissionStore{
+				Store:              memory.New(),
+				err:                sequencer.ErrStaleOwner,
+				settlementErr:      test.settlementErr,
+				secondClaimEntered: make(chan struct{}),
+				releaseSecondClaim: make(chan struct{}),
+			}
+			fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
+				RunnerOptions: sequencer.RunnerOptions{
+					Owner: "pod-admission",
+					Observers: []sequencer.Observer{sequencer.ObserverFunc(func(event sequencer.Event) {
+						if event.Type == sequencer.EventCompleted && event.Operation == second.ID {
+							completed <- event
+						}
+					})},
+				},
+				ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+				MaxConcurrency: 2, ShutdownWait: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := startFleet(context.Background(), t, fleet)
+			select {
+			case <-firstStarted:
+			case <-time.After(time.Second):
+				t.Fatal("first handler did not start")
+			}
+			select {
+			case <-store.secondClaimEntered:
+			case <-time.After(time.Second):
+				t.Fatal("second claim did not reach the admission race")
+			}
+			deadline := time.After(time.Second)
+			for fleet.State() != sequencer.RunnerFailed {
+				select {
+				case <-deadline:
+					t.Fatal("lease failure did not close readiness")
+				default:
+					time.Sleep(time.Millisecond)
+				}
+			}
+			close(store.releaseSecondClaim)
+			runErr := awaitFleetResult(t, done)
+			if !errors.Is(runErr, sequencer.ErrStaleOwner) || test.settlementErr != nil && !errors.Is(runErr, test.settlementErr) {
+				t.Fatalf("Run() error = %v, want lease and settlement failures", runErr)
+			}
+			select {
+			case <-secondStarted:
+				t.Fatal("handler started for a claim returned after admission closed")
+			default:
+			}
+			record, snapshotErr := store.Snapshot(context.Background(), second.ID, second.Version)
+			if snapshotErr != nil || record.State != test.wantState {
+				t.Fatalf("second Snapshot() = %+v, %v; want %s without execution", record, snapshotErr, test.wantState)
+			}
+			if test.settlementErr == nil {
+				select {
+				case event := <-completed:
+					if event.Channel != second.Channel {
+						t.Fatalf("completed channel = %q, want %q", event.Channel, second.Channel)
+					}
+				default:
+					t.Fatal("canceled claim did not emit a completion event")
+				}
+			}
+		})
+	}
+}
+
+func TestFleetDoesNotClaimAfterLeaseFailureClosesAdmissionDuringRecovery(t *testing.T) {
+	t.Parallel()
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	defer close(releaseFirst)
+	secondStarted := make(chan struct{}, 1)
+	first := validSpec("fleet.recovery-admission.first")
+	first.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		close(firstStarted)
+		<-releaseFirst
+		return sequencer.Output{}, nil
+	})
+	second := validSpec("fleet.recovery-admission.second")
+	second.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		secondStarted <- struct{}{}
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{first, second}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &leaseFailureRecoveryStore{
+		Store:                 memory.New(),
+		err:                   sequencer.ErrStaleOwner,
+		secondRecoveryEntered: make(chan struct{}),
+		releaseSecondRecovery: make(chan struct{}),
+	}
+	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
+		RunnerOptions: sequencer.RunnerOptions{Owner: "pod-recovery-admission"},
+		ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+		MaxConcurrency: 2, ShutdownWait: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := startFleet(context.Background(), t, fleet)
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first handler did not start")
+	}
+	select {
+	case <-store.secondRecoveryEntered:
+	case <-time.After(time.Second):
+		t.Fatal("second recovery did not reach the admission race")
+	}
+	deadline := time.After(time.Second)
+	for fleet.State() != sequencer.RunnerFailed {
+		select {
+		case <-deadline:
+			t.Fatal("lease failure did not close readiness")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(store.releaseSecondRecovery)
+	if runErr := awaitFleetResult(t, done); !errors.Is(runErr, sequencer.ErrStaleOwner) {
+		t.Fatalf("Run() error = %v, want stale owner", runErr)
+	}
+	select {
+	case <-secondStarted:
+		t.Fatal("handler started after recovery returned to closed admission")
+	default:
+	}
+	record, snapshotErr := store.Snapshot(context.Background(), second.ID, second.Version)
+	if snapshotErr != nil || record.State != sequencer.Eligible {
+		t.Fatalf("second Snapshot() = %+v, %v; want eligible and unclaimed", record, snapshotErr)
+	}
+}
+
 func TestFleetIgnoresRenewalCancellationAfterAttemptStops(t *testing.T) {
 	t.Parallel()
 
@@ -1332,7 +1505,7 @@ func TestFleetRejectsExpiredAndRegressingRenewalDeadlines(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			store := &renewResultStore{Store: memory.New(), until: test.renewUntil}
+			store := &renewResultStore{Store: memory.New(), until: test.renewUntil, clock: clock, advance: test.advance}
 			fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
 				RunnerOptions: sequencer.RunnerOptions{Owner: "pod", Clock: clock, LeaseDuration: 200 * time.Millisecond},
 				ClaimInterval: time.Millisecond, RenewInterval: 10 * time.Millisecond,
@@ -1346,11 +1519,6 @@ func TestFleetRejectsExpiredAndRegressingRenewalDeadlines(t *testing.T) {
 			case <-started:
 			case <-time.After(time.Second):
 				t.Fatal("handler was not called")
-			}
-			if test.advance != 0 {
-				clock.mu.Lock()
-				clock.now = base.Add(test.advance)
-				clock.mu.Unlock()
 			}
 			if err := awaitFleetResult(t, done); !errors.Is(err, test.want) {
 				t.Fatalf("Run() error = %v, want %v", err, test.want)
@@ -1643,6 +1811,25 @@ type failingRenewStore struct {
 	err error
 }
 
+type leaseFailureAdmissionStore struct {
+	*memory.Store
+	err                error
+	settlementErr      error
+	mu                 sync.Mutex
+	claims             int
+	secondClaimEntered chan struct{}
+	releaseSecondClaim chan struct{}
+}
+
+type leaseFailureRecoveryStore struct {
+	*memory.Store
+	err                   error
+	mu                    sync.Mutex
+	recoveries            int
+	secondRecoveryEntered chan struct{}
+	releaseSecondRecovery chan struct{}
+}
+
 type cancelingRenewStore struct {
 	*memory.Store
 	entered chan struct{}
@@ -1757,7 +1944,19 @@ func (store *unexpectedClaimStore) ClaimNext(context.Context, sequencer.ClaimReq
 
 type renewResultStore struct {
 	*memory.Store
-	until time.Time
+	until   time.Time
+	clock   *manualClock
+	advance time.Duration
+}
+
+func (store *renewResultStore) MarkRunning(ctx context.Context, ownership sequencer.Ownership, now time.Time) (sequencer.AttemptRecord, error) {
+	record, err := store.Store.MarkRunning(ctx, ownership, now)
+	if err == nil && store.advance != 0 {
+		store.clock.mu.Lock()
+		store.clock.now = now.Add(store.advance)
+		store.clock.mu.Unlock()
+	}
+	return record, err
 }
 
 func (store *renewResultStore) RenewLease(context.Context, sequencer.Ownership, time.Time, time.Duration) (time.Time, error) {
@@ -1844,6 +2043,55 @@ func (store *completionFailureStore) Complete(context.Context, sequencer.Complet
 }
 
 func (store *failingRenewStore) RenewLease(context.Context, sequencer.Ownership, time.Time, time.Duration) (time.Time, error) {
+	return time.Time{}, store.err
+}
+
+func (store *leaseFailureAdmissionStore) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
+	store.mu.Lock()
+	store.claims++
+	claimNumber := store.claims
+	store.mu.Unlock()
+	if claimNumber == 2 {
+		close(store.secondClaimEntered)
+		select {
+		case <-ctx.Done():
+			return sequencer.Claim{}, ctx.Err()
+		case <-store.releaseSecondClaim:
+		}
+	}
+	return store.Store.ClaimNext(ctx, request)
+}
+
+func (store *leaseFailureAdmissionStore) RenewLease(context.Context, sequencer.Ownership, time.Time, time.Duration) (time.Time, error) {
+	<-store.secondClaimEntered
+	return time.Time{}, store.err
+}
+
+func (store *leaseFailureAdmissionStore) Complete(ctx context.Context, completion sequencer.Completion) error {
+	if completion.From == sequencer.Claimed && store.settlementErr != nil {
+		return store.settlementErr
+	}
+	return store.Store.Complete(ctx, completion)
+}
+
+func (store *leaseFailureRecoveryStore) RecoverExpired(ctx context.Context, now time.Time) (int, error) {
+	store.mu.Lock()
+	store.recoveries++
+	recoveryNumber := store.recoveries
+	store.mu.Unlock()
+	if recoveryNumber == 2 {
+		close(store.secondRecoveryEntered)
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-store.releaseSecondRecovery:
+		}
+	}
+	return store.Store.RecoverExpired(ctx, now)
+}
+
+func (store *leaseFailureRecoveryStore) RenewLease(context.Context, sequencer.Ownership, time.Time, time.Duration) (time.Time, error) {
+	<-store.secondRecoveryEntered
 	return time.Time{}, store.err
 }
 

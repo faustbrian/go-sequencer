@@ -152,6 +152,12 @@ func (fleet *Fleet) setState(state RunnerState) {
 	fleet.mu.Unlock()
 }
 
+func (fleet *Fleet) admissionOpen() bool {
+	fleet.mu.RLock()
+	defer fleet.mu.RUnlock()
+	return fleet.state == RunnerAccepting
+}
+
 func (fleet *Fleet) beginRun() bool {
 	fleet.mu.Lock()
 	defer fleet.mu.Unlock()
@@ -250,6 +256,13 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 			fleet.setState(RunnerFailed)
 			return recoveryErr
 		}
+		if !fleet.admissionOpen() {
+			cancelWork()
+			err := fleet.waitForDrain(results, active)
+			cancelRenewals()
+			fleet.setState(RunnerFailed)
+			return err
+		}
 		claimContext, cancelClaim := context.WithTimeout(ctx, fleet.options.ShutdownWait)
 		claim, err := fleet.store.ClaimNext(claimContext, ClaimRequest{
 			Candidates: candidates, Owner: fleet.options.Owner, Now: now,
@@ -309,13 +322,50 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 			fleet.setState(RunnerFailed)
 			return ErrDefinitionDrift
 		}
+		if !fleet.admitClaim(workContext, renewalContext, operation, claim, results, now) {
+			settlementErr := fleet.settleUnadmittedClaim(claim, operation.spec.Channel)
+			cancelWork()
+			drainErr := fleet.waitForDrain(results, active)
+			cancelRenewals()
+			fleet.setState(RunnerFailed)
+			return errors.Join(drainErr, settlementErr)
+		}
 		active, _ = bits.Add64(active, 1, 0)
-		fleet.observe(Event{Type: EventClaimed, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Claimed, At: now})
+	}
+}
+
+func (fleet *Fleet) admitClaim(workContext, renewalContext context.Context, operation Operation, claim Claim, results chan<- error, now time.Time) bool {
+	start := make(chan struct{})
+	fleet.mu.Lock()
+	open := fleet.state == RunnerAccepting
+	if open {
 		fleet.renewalStarts.Add(1)
 		fleet.workers.Go(func() {
+			<-start
 			results <- fleet.executeClaim(workContext, renewalContext, operation, claim)
 		})
 	}
+	fleet.mu.Unlock()
+	if open {
+		fleet.observe(Event{Type: EventClaimed, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Claimed, At: now})
+		close(start)
+	}
+	return open
+}
+
+func (fleet *Fleet) settleUnadmittedClaim(claim Claim, channel string) error {
+	completion := Completion{
+		Ownership: claim.Ownership(), From: Claimed, State: Canceled,
+		At: fleet.options.Clock.Now(), ErrorDetail: ErrCanceled.Error(),
+		Actor: fleet.options.Owner, Reason: "fleet admission closed",
+	}
+	completionContext, cancel := context.WithTimeout(context.Background(), fleet.options.ShutdownWait)
+	defer cancel()
+	if err := fleet.store.Complete(completionContext, completion); err != nil {
+		return fmt.Errorf("sequencer: settle claim after admission closed: %w", err)
+	}
+	fleet.observe(Event{Type: EventCompleted, Operation: claim.Attempt.OperationID, Channel: channel, Attempt: claim.Attempt.Number, State: Canceled, At: completion.At, Err: ErrCanceled})
+	return nil
 }
 
 func isRunCancellation(ctx context.Context, err error) bool {

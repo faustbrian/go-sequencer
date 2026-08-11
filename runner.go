@@ -456,6 +456,8 @@ func (runner *Runner) invoke(ctx context.Context, spec OperationSpec, attempt At
 		resultErr = UnknownResult(errors.Join(contractErr, callbackErr, managerErr))
 	case callbackErr != nil && (managerErr == nil || !errors.Is(managerErr, callbackErr)):
 		resultErr = UnknownResult(errors.Join(contractErr, callbackErr, managerErr))
+	case callbackErr == nil && managerErr != nil:
+		resultErr = UnknownResult(managerErr)
 	default:
 		result, resultReason, resultErr = output, reason, managerErr
 	}

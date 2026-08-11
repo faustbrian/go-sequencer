@@ -599,6 +599,16 @@ func TestRunnerRejectsTransactionManagerContractViolations(t *testing.T) {
 			want:       sequencer.ErrUnknownResult, wantState: sequencer.Indeterminate, invocations: 1,
 		},
 		{
+			name: "commit response lost",
+			manager: func(ctx context.Context, execute func(context.Context, any) error) error {
+				if err := execute(ctx, &struct{}{}); err != nil {
+					return err
+				}
+				return errors.New("commit response lost")
+			},
+			want: sequencer.ErrUnknownResult, wantState: sequencer.Indeterminate, invocations: 1,
+		},
+		{
 			name: "nil transaction",
 			manager: func(ctx context.Context, execute func(context.Context, any) error) error {
 				return execute(ctx, nil)

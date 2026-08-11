@@ -62,6 +62,9 @@
 
 ### Fixed
 
+- Treat a transaction-manager error after a successful handler callback as an
+  unknown commit result so automatic replay cannot duplicate a committed side
+  effect whose acknowledgement was lost.
 - Close claim admission atomically when lease ownership fails, and cancel a
   claim returned across that boundary without invoking its handler.
 - Treat persisted skips as completed one-time outcomes on later synchronous

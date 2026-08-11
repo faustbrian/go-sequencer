@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -15,10 +17,128 @@ import (
 	sequencer "github.com/faustbrian/golib/pkg/sequencer"
 	sequencerpostgres "github.com/faustbrian/golib/pkg/sequencer/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 const postgresIntegrationImage = "postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
+
+func TestPostgresStoreFailsClosedAndRecoversAfterServerRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve PostgreSQL restart port: %v", err)
+	}
+	hostPort := fmt.Sprint(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release PostgreSQL restart port: %v", err)
+	}
+	container, err := tcpostgres.Run(ctx, postgresIntegrationImage,
+		tcpostgres.WithDatabase("sequencer"),
+		tcpostgres.WithUsername("sequencer"),
+		tcpostgres.WithPassword("sequencer"),
+		tcpostgres.BasicWaitStrategies(),
+		testcontainers.WithHostConfigModifier(func(config *container.HostConfig) {
+			config.PortBindings = network.PortMap{
+				network.MustParsePort("5432/tcp"): {
+					{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: hostPort},
+				},
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("start PostgreSQL: %v", err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	connection, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	applyMigration(t, ctx, pool, "00001_create_sequencer_ledger.sql")
+	applyMigration(t, ctx, pool, "00002_pin_dependency_definitions.sql")
+	store, err := sequencerpostgres.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration := sequencer.Registration{
+		ID: "failover.operation", Version: 1, Checksum: "sha256:failover", Channel: "deploy",
+	}
+	if err := store.Register(ctx, []sequencer.Registration{registration}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: 1, Checksum: registration.Checksum, Channel: registration.Channel}},
+		Owner:      "pod-before-failover", Now: time.Now(), LeaseDuration: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkRunning(ctx, claim.Ownership(), claim.Attempt.StartedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	stopTimeout := 10 * time.Second
+	if err := container.Stop(ctx, &stopTimeout); err != nil {
+		t.Fatalf("stop PostgreSQL: %v", err)
+	}
+	renewContext, stopRenew := context.WithTimeout(ctx, time.Second)
+	_, renewErr := store.RenewLease(renewContext, claim.Ownership(), time.Now(), time.Second)
+	stopRenew()
+	if renewErr == nil {
+		t.Fatal("RenewLease() succeeded while PostgreSQL was stopped")
+	}
+	if err := container.Start(ctx); err != nil {
+		t.Fatalf("restart PostgreSQL: %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		err = pool.Ping(ctx)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pool did not recover after PostgreSQL restart: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	expiryDeadline := time.Now().Add(30 * time.Second)
+	for {
+		var expired bool
+		if err := pool.QueryRow(ctx, `
+SELECT lease_expires_at <= clock_timestamp()
+FROM sequencer_operations
+WHERE operation_id = $1 AND version = $2`, registration.ID, registration.Version).Scan(&expired); err != nil {
+			t.Fatal(err)
+		}
+		if expired {
+			break
+		}
+		if time.Now().After(expiryDeadline) {
+			t.Fatal("lease did not expire after PostgreSQL restart")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if recovered, err := store.RecoverExpired(ctx, time.Now().Add(time.Minute)); err != nil || recovered != 1 {
+		t.Fatalf("RecoverExpired() = %d, %v", recovered, err)
+	}
+	record, err := store.Snapshot(ctx, registration.ID, registration.Version)
+	if err != nil || record.State != sequencer.Indeterminate {
+		t.Fatalf("Snapshot() = %+v, %v", record, err)
+	}
+	if err := store.Complete(ctx, sequencer.Completion{
+		Ownership: claim.Ownership(), State: sequencer.Succeeded, At: time.Now(),
+	}); !errors.Is(err, sequencer.ErrStaleOwner) {
+		t.Fatalf("stale Complete() error = %v", err)
+	}
+}
 
 func TestPostgresStoreConcurrentClaimsRecoveryAndDrift(t *testing.T) {
 	ctx := context.Background()
@@ -304,10 +424,10 @@ INSERT INTO sequencer_attempts (
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.MarkRunning(ctx, failedClaim.Ownership(), time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Complete(ctx, sequencer.Completion{Ownership: failedClaim.Ownership(), State: sequencer.Failed}); err != nil {
+	if err := store.Complete(ctx, sequencer.Completion{
+		Ownership: failedClaim.Ownership(), From: sequencer.Claimed,
+		State: sequencer.Failed, ErrorDetail: sequencer.ErrBudgetExhausted.Error(),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.Snapshot(ctx, failed.ID, 1)
@@ -315,8 +435,12 @@ INSERT INTO sequencer_attempts (
 		t.Fatalf("Snapshot() = %+v, %v", snapshot, err)
 	}
 	history, err := store.History(ctx, failed.ID, 1, 10)
-	if err != nil || len(history) != 1 || history[0].State != sequencer.Failed {
+	if err != nil || len(history) != 1 || history[0].State != sequencer.Failed || history[0].ErrorDetail != sequencer.ErrBudgetExhausted.Error() {
 		t.Fatalf("History() = %+v, %v", history, err)
+	}
+	audit, err = store.Audit(ctx, failed.ID, 1, 10)
+	if err != nil || audit[len(audit)-1].From != sequencer.Claimed || audit[len(audit)-1].To != sequencer.Failed {
+		t.Fatalf("direct claim settlement audit = %+v, %v", audit, err)
 	}
 	if _, err := store.Snapshot(ctx, "missing", 1); !errors.Is(err, sequencer.ErrNotFound) {
 		t.Fatalf("Snapshot(missing) error = %v", err)

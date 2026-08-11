@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -274,7 +275,7 @@ func TestFleetDrainOnlyAttemptBecomesUnknownAndCannotCompleteAfterTakeover(t *te
 		RunnerOptions: sequencer.RunnerOptions{
 			Owner: "pod-old", LeaseDuration: 2 * time.Minute,
 		},
-		ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+		ClaimInterval: time.Millisecond, RenewInterval: time.Second,
 		MaxConcurrency: 1, ShutdownWait: 10 * time.Millisecond,
 	})
 	if err != nil {
@@ -747,6 +748,18 @@ func TestFleetBoundsConcurrentAcceptedAttempts(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	runAwaited := false
+	defer func() {
+		cancel()
+		close(release)
+		if runAwaited {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	}()
 	go func() { done <- fleet.Run(ctx) }()
 	for range 2 {
 		select {
@@ -779,6 +792,7 @@ func TestFleetBoundsConcurrentAcceptedAttempts(t *testing.T) {
 	if err := awaitFleetResult(t, done); err != nil {
 		t.Fatal(err)
 	}
+	runAwaited = true
 }
 
 func TestFleetRecoversExpiredAcceptedAttemptBeforeClaimingTakeover(t *testing.T) {
@@ -787,6 +801,7 @@ func TestFleetRecoversExpiredAcceptedAttemptBeforeClaimingTakeover(t *testing.T)
 	initial := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	store := memory.New()
 	spec := validSpec("fleet.recovery")
+	spec.Policy.MaxAttempts = 2
 	spec.Policy.UnknownOutcome = sequencer.UnknownOutcomeReplayIdempotent
 	if err := store.Register(context.Background(), []sequencer.Registration{{
 		ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel,
@@ -843,6 +858,101 @@ func TestFleetRecoversExpiredAcceptedAttemptBeforeClaimingTakeover(t *testing.T)
 	}
 }
 
+func TestFleetDoesNotExecuteRecoveredAttemptBeyondSharedBudget(t *testing.T) {
+	t.Parallel()
+
+	initial := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	store := memory.New()
+	spec := validSpec("fleet.recovery-budget")
+	spec.Policy.UnknownOutcome = sequencer.UnknownOutcomeReplayIdempotent
+	registration := sequencer.Registration{
+		ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel,
+		UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
+	}
+	if err := store.Register(context.Background(), []sequencer.Registration{registration}, initial); err != nil {
+		t.Fatal(err)
+	}
+	old, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel}},
+		Owner:      "lost-pod", Now: initial, LeaseDuration: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkRunning(context.Background(), old.Ownership(), initial); err != nil {
+		t.Fatal(err)
+	}
+
+	handlerCalled := make(chan struct{}, 1)
+	completed := make(chan sequencer.Event, 1)
+	var eventsMu sync.Mutex
+	var events []sequencer.EventType
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		handlerCalled <- struct{}{}
+		return sequencer.Output{Summary: "duplicate"}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
+		RunnerOptions: sequencer.RunnerOptions{
+			Owner: "replacement", Clock: newManualClock(initial.Add(2 * time.Second)),
+			Observers: []sequencer.Observer{sequencer.ObserverFunc(func(event sequencer.Event) {
+				eventsMu.Lock()
+				events = append(events, event.Type)
+				eventsMu.Unlock()
+				if event.Type == sequencer.EventCompleted {
+					completed <- event
+				}
+			})},
+		},
+		ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+		MaxConcurrency: 1, ShutdownWait: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fleet.Run(ctx) }()
+	select {
+	case event := <-completed:
+		if event.State != sequencer.Failed || !errors.Is(event.Err, sequencer.ErrBudgetExhausted) {
+			t.Fatalf("completion event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fleet did not settle the exhausted recovered attempt")
+	}
+	cancel()
+	if err := awaitFleetResult(t, done); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handlerCalled:
+		t.Fatal("handler executed beyond MaxAttempts")
+	default:
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 2)
+	if err != nil || len(history) != 2 || history[0].State != sequencer.Indeterminate || history[1].State != sequencer.Failed || history[1].ErrorDetail != sequencer.ErrBudgetExhausted.Error() {
+		t.Fatalf("History() = %+v, %v", history, err)
+	}
+	eventsMu.Lock()
+	gotEvents := append([]sequencer.EventType(nil), events...)
+	eventsMu.Unlock()
+	if want := []sequencer.EventType{sequencer.EventClaimed, sequencer.EventCompleted}; !reflect.DeepEqual(gotEvents, want) {
+		t.Fatalf("events = %v, want %v", gotEvents, want)
+	}
+	audit, err := store.Audit(context.Background(), spec.ID, spec.Version, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := audit[len(audit)-1]
+	if last.Attempt != 2 || last.From != sequencer.Claimed || last.To != sequencer.Failed {
+		t.Fatalf("terminal audit = %+v, want claimed -> failed for attempt 2", last)
+	}
+}
+
 func TestFleetDoesNotReplayExpiredUnknownWorkByDefault(t *testing.T) {
 	t.Parallel()
 
@@ -875,7 +985,25 @@ func TestFleetDoesNotReplayExpiredUnknownWorkByDefault(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- fleet.Run(ctx) }()
-	time.Sleep(20 * time.Millisecond)
+	recoveryDeadline := time.Now().Add(time.Second)
+	for {
+		record, snapshotErr := store.Snapshot(context.Background(), spec.ID, spec.Version)
+		if snapshotErr != nil {
+			t.Fatal(snapshotErr)
+		}
+		if record.State == sequencer.Indeterminate {
+			break
+		}
+		select {
+		case <-executed:
+			t.Fatal("indeterminate operation was replayed")
+		default:
+		}
+		if time.Now().After(recoveryDeadline) {
+			t.Fatalf("state = %s, want indeterminate", record.State)
+		}
+		time.Sleep(time.Millisecond)
+	}
 	cancel()
 	if err := awaitFleetResult(t, done); err != nil {
 		t.Fatal(err)
@@ -961,6 +1089,7 @@ func TestFleetBoundsDetachedMarkRunning(t *testing.T) {
 	}
 	store := &blockingMarkRunningStore{
 		Store: memory.New(), entered: make(chan struct{}), returned: make(chan struct{}),
+		deadline: make(chan time.Duration, 1),
 	}
 	const bound = 25 * time.Millisecond
 	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
@@ -972,18 +1101,22 @@ func TestFleetBoundsDetachedMarkRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	startedAt := time.Now()
 	go func() { done <- fleet.Run(context.Background()) }()
 	select {
 	case <-store.entered:
 	case <-time.After(time.Second):
 		t.Fatal("MarkRunning was not called")
 	}
+	select {
+	case remaining := <-store.deadline:
+		if remaining > bound {
+			t.Fatalf("MarkRunning deadline remaining = %s, want at most %s", remaining, bound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("MarkRunning context had no observable deadline")
+	}
 	if err := awaitFleetResult(t, done); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run() error = %v", err)
-	}
-	if elapsed := time.Since(startedAt); elapsed > 10*bound {
-		t.Fatalf("Run() elapsed = %s, want within %s", elapsed, 10*bound)
 	}
 	select {
 	case <-store.returned:
@@ -1007,12 +1140,14 @@ func TestFleetBoundsEachLeaseRenewal(t *testing.T) {
 	}
 	store := &blockingRenewStore{
 		Store: memory.New(), entered: make(chan struct{}), returned: make(chan struct{}),
+		deadline: make(chan time.Duration, 1),
 	}
 	const bound = 20 * time.Millisecond
+	const shutdownWait = 100 * time.Millisecond
 	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
 		RunnerOptions: sequencer.RunnerOptions{Owner: "pod", LeaseDuration: time.Second},
 		ClaimInterval: time.Millisecond, RenewInterval: bound,
-		MaxConcurrency: 1, ShutdownWait: 100 * time.Millisecond,
+		MaxConcurrency: 1, ShutdownWait: shutdownWait,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1020,7 +1155,6 @@ func TestFleetBoundsEachLeaseRenewal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	startedAt := time.Now()
 	go func() { done <- fleet.Run(ctx) }()
 	select {
 	case <-store.entered:
@@ -1028,16 +1162,21 @@ func TestFleetBoundsEachLeaseRenewal(t *testing.T) {
 		t.Fatal("RenewLease was not called")
 	}
 	select {
+	case remaining := <-store.deadline:
+		if remaining > shutdownWait {
+			t.Fatalf("renewal deadline remaining = %s, want at most %s", remaining, shutdownWait)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RenewLease context had no observable deadline")
+	}
+	select {
 	case runErr := <-done:
 		if !errors.Is(runErr, context.DeadlineExceeded) {
 			t.Fatalf("Run() error = %v, want deadline exceeded", runErr)
 		}
-	case <-time.After(15 * bound):
+	case <-time.After(time.Second):
 		cancel()
 		t.Fatal("fleet did not bound stalled renewal")
-	}
-	if elapsed := time.Since(startedAt); elapsed > 15*bound {
-		t.Fatalf("Run() elapsed = %s, want within %s", elapsed, 15*bound)
 	}
 	select {
 	case <-store.returned:
@@ -1408,6 +1547,7 @@ type blockingMarkRunningStore struct {
 	*memory.Store
 	entered  chan struct{}
 	returned chan struct{}
+	deadline chan time.Duration
 	once     sync.Once
 }
 
@@ -1415,6 +1555,7 @@ type blockingRenewStore struct {
 	*memory.Store
 	entered  chan struct{}
 	returned chan struct{}
+	deadline chan time.Duration
 	once     sync.Once
 }
 
@@ -1427,6 +1568,9 @@ type blockingFleetStore struct {
 }
 
 func (store *blockingMarkRunningStore) MarkRunning(ctx context.Context, _ sequencer.Ownership, _ time.Time) (sequencer.AttemptRecord, error) {
+	if deadline, ok := ctx.Deadline(); ok && store.deadline != nil {
+		store.deadline <- time.Until(deadline)
+	}
 	store.once.Do(func() { close(store.entered) })
 	defer close(store.returned)
 	<-ctx.Done()
@@ -1434,6 +1578,9 @@ func (store *blockingMarkRunningStore) MarkRunning(ctx context.Context, _ sequen
 }
 
 func (store *blockingRenewStore) RenewLease(ctx context.Context, _ sequencer.Ownership, _ time.Time, _ time.Duration) (time.Time, error) {
+	if deadline, ok := ctx.Deadline(); ok && store.deadline != nil {
+		store.deadline <- time.Until(deadline)
+	}
 	store.once.Do(func() { close(store.entered) })
 	defer close(store.returned)
 	<-ctx.Done()

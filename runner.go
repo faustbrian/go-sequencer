@@ -298,12 +298,28 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 		}
 		result.Attempts = claim.Attempt.Number
 		runner.observe(Event{Type: EventClaimed, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: Claimed, At: now})
+		if executionErr := attemptBudgetError(claim.Budget, spec.Policy); executionErr != nil {
+			state := classifyState(executionErr, spec.Policy, claim.Budget.Attempt, claim.Budget.Exceptions)
+			completion := Completion{
+				Ownership: claim.Ownership(), From: Claimed, State: state,
+				At: runner.options.Clock.Now(), ErrorDetail: persistentErrorDetail(executionErr),
+			}
+			if err := runner.store.Complete(ctx, completion); err != nil {
+				result.Err = err
+				return result, err
+			}
+			result.State, result.Err = state, executionErr
+			runner.observe(Event{Type: EventCompleted, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
+			return result, executionErr
+		}
 		if _, err := runner.store.MarkRunning(ctx, claim.Ownership(), now); err != nil {
 			result.Err = err
 			return result, err
 		}
 		runner.observe(Event{Type: EventRunning, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: Running, At: now})
 
+		var output Output
+		var actor, reason string
 		output, actor, reason, executionErr := runner.runAttempt(ctx, spec, claim.Attempt)
 		retryException := spec.Policy.RetryMode == DurableRetries && errors.Is(executionErr, ErrRetryable)
 		exceptions := claim.Budget.Exceptions
@@ -396,7 +412,7 @@ func (runner *Runner) invoke(ctx context.Context, spec OperationSpec, attempt At
 	defer cancel()
 	if !spec.Policy.WithinTransaction {
 		output, reason, err := executeAttempt(ctx, spec, attempt)
-		return attemptContextOutcome(ctx, output, reason, err)
+		return attemptContextOutcome(ctx, spec.Policy.Cancellation, output, reason, err)
 	}
 	var output Output
 	var reason string
@@ -439,12 +455,15 @@ func (runner *Runner) invoke(ctx context.Context, spec OperationSpec, attempt At
 	default:
 		result, resultReason, resultErr = output, reason, managerErr
 	}
-	return attemptContextOutcome(ctx, result, resultReason, resultErr)
+	return attemptContextOutcome(ctx, spec.Policy.Cancellation, result, resultReason, resultErr)
 }
 
-func attemptContextOutcome(ctx context.Context, output Output, reason string, err error) (Output, string, error) {
+func attemptContextOutcome(ctx context.Context, cancellation CancellationMode, output Output, reason string, err error) (Output, string, error) {
 	if errors.Is(err, ErrUnknownResult) || ctx.Err() == nil {
 		return output, reason, err
+	}
+	if cancellation == CancellationDrainOnly {
+		return Output{}, "", UnknownResult(ctx.Err())
 	}
 	return Output{}, "", ctx.Err()
 }
@@ -504,6 +523,13 @@ func classifyState(err error, policy Policy, attempt, exceptions uint) State {
 	return Retryable
 }
 
+func attemptBudgetError(budget RetryBudget, policy Policy) error {
+	if budget.Attempt > policy.MaxAttempts {
+		return ErrBudgetExhausted
+	}
+	return nil
+}
+
 func terminalFailureState(policy Policy) State {
 	if policy.DeadLetter {
 		return DeadLettered
@@ -519,12 +545,14 @@ func persistentErrorDetail(err error) string {
 		return ErrSkipped.Error()
 	case errors.Is(err, ErrBlocked):
 		return ErrBlocked.Error()
+	case errors.Is(err, ErrUnknownResult):
+		return ErrUnknownResult.Error()
 	case errors.Is(err, context.Canceled), errors.Is(err, ErrCanceled):
 		return ErrCanceled.Error()
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrTimeout):
 		return ErrTimeout.Error()
-	case errors.Is(err, ErrUnknownResult):
-		return ErrUnknownResult.Error()
+	case errors.Is(err, ErrBudgetExhausted):
+		return ErrBudgetExhausted.Error()
 	default:
 		return ErrPermanent.Error()
 	}

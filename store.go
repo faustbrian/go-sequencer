@@ -181,6 +181,8 @@ func (claim Claim) Ownership() Ownership {
 // Completion records a terminal or retryable attempt outcome.
 type Completion struct {
 	Ownership
+	// From is the fenced source state. Zero retains the historical Running default.
+	From           State
 	State          State
 	At             time.Time
 	EligibleAt     time.Time

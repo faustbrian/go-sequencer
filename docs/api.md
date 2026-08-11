@@ -16,8 +16,11 @@ cycles, and resource-limit violations. `Plan.IDs`, `Plan.Operations`, and
 
 `Store` is the root durability contract. Registration fails on checksum drift.
 Claims include owner and fencing proof. Every mutation after claim requires
-that proof. `Claim.Budget` contains the durable attempt and prior retry-exception
-counts for the current replay epoch; `Record` exposes the persisted counters.
+that proof. `Completion.From` selects the fenced source state and defaults to
+`Running`; runners use `Claimed` only to settle an exhausted claim without
+claiming handler execution. `Claim.Budget` contains the durable attempt and
+prior retry-exception counts for the current replay epoch; `Record` exposes the
+persisted counters.
 Attempts and audit events are bounded inspection surfaces.
 `ReconciliationStore` optionally adds `ResolveUnknown`; each request is bounded,
 attributed, and bound to the exact operation version, attempt, and fencing token.

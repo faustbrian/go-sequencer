@@ -491,7 +491,11 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if !ownershipValid(completion.Ownership) {
 		return sequencer.ErrInvalidOperation
 	}
-	if err := sequencer.ValidateTransition(sequencer.Running, completion.State); err != nil {
+	from := completion.From
+	if from == 0 {
+		from = sequencer.Running
+	}
+	if err := sequencer.ValidateTransition(from, completion.State); err != nil {
 		return err
 	}
 	if completion.State == sequencer.Retryable && !completion.RetryException ||
@@ -520,11 +524,12 @@ UPDATE sequencer_operations SET
     eligible_at = CASE WHEN $5 IN ('retryable', 'deferred') THEN $6 ELSE eligible_at END,
     updated_at = clock_timestamp()
 WHERE operation_id = $1 AND version = $2 AND owner = $3
-  AND fencing_token = $4 AND state = 'running'
+  AND fencing_token = $4 AND state = $7
   AND lease_expires_at > clock_timestamp()
 RETURNING attempt_number, fencing_token, updated_at`,
 		completion.OperationID, completion.Version, completion.Owner,
 		completion.Fencing, completion.State.String(), completion.EligibleAt,
+		from.String(),
 	).Scan(&number, &fencing, &completedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sequencer.ErrStaleOwner
@@ -538,10 +543,10 @@ UPDATE sequencer_attempts SET state = $4, completed_at = $5,
     error_detail = NULLIF($6, ''), output = $7
 WHERE operation_id = $1 AND version = $2 AND attempt_number = $3
   AND owner = $8 AND fencing_token = $9
-  AND state = 'running' AND completed_at IS NULL`,
+  AND state = $10 AND completed_at IS NULL`,
 		completion.OperationID, completion.Version, number,
 		completion.State.String(), completedAt, detail, output,
-		completion.Owner, fencing)
+		completion.Owner, fencing, from.String())
 	if err != nil {
 		return err
 	}
@@ -553,7 +558,7 @@ WHERE operation_id = $1 AND version = $2 AND attempt_number = $3
 		return err
 	}
 	if err = insertAudit(ctx, tx, completion.OperationID, version,
-		number, sequencer.Running, completion.State, completedAt,
+		number, from, completion.State, completedAt,
 		completion.Owner, fencing, actor, reason); err != nil {
 		return err
 	}

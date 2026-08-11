@@ -658,6 +658,178 @@ func TestRunnerRejectsSuccessReturnedAfterAttemptDeadline(t *testing.T) {
 	}
 }
 
+func TestRunnerRecordsDrainOnlyDeadlineAsIndeterminate(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("deadline.drain-only")
+	spec.Policy.Cancellation = sequencer.CancellationDrainOnly
+	spec.Policy.Timeout = time.Millisecond
+	spec.Handler = sequencer.HandlerFunc(func(ctx context.Context, _ sequencer.Attempt) (sequencer.Output, error) {
+		<-ctx.Done()
+		return sequencer.Output{Summary: "possibly committed"}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Execute(context.Background())
+	if !errors.Is(err, sequencer.ErrUnknownResult) || len(report.Operations) != 1 || report.Operations[0].State != sequencer.Indeterminate {
+		t.Fatalf("Execute() report = %+v, error = %v", report, err)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].State != sequencer.Indeterminate || history[0].Output.Summary != "" || history[0].ErrorDetail != sequencer.ErrUnknownResult.Error() {
+		t.Fatalf("history = %+v", history)
+	}
+}
+
+func TestRunnerDoesNotExecuteRecoveredAttemptBeyondSharedBudget(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	store := memory.New()
+	spec := validSpec("runner.recovery-budget")
+	spec.Policy.UnknownOutcome = sequencer.UnknownOutcomeReplayIdempotent
+	registration := sequencer.Registration{
+		ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel,
+		UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
+	}
+	if err := store.Register(context.Background(), []sequencer.Registration{registration}, now); err != nil {
+		t.Fatal(err)
+	}
+	old, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel}},
+		Owner:      "lost", Now: now, LeaseDuration: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkRunning(context.Background(), old.Ownership(), now); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := store.RecoverExpired(context.Background(), now.Add(2*time.Second)); err != nil || recovered != 1 {
+		t.Fatalf("RecoverExpired() = %d, %v", recovered, err)
+	}
+	called := false
+	var events []sequencer.EventType
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		called = true
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{
+		Owner: "replacement", Clock: newManualClock(now.Add(2 * time.Second)),
+		Observers: []sequencer.Observer{sequencer.ObserverFunc(func(event sequencer.Event) {
+			events = append(events, event.Type)
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Execute(context.Background())
+	if !errors.Is(err, sequencer.ErrBudgetExhausted) || called || len(report.Operations) != 1 || report.Operations[0].State != sequencer.Failed {
+		t.Fatalf("Execute() report = %+v, error = %v, handler called = %t", report, err, called)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 2)
+	if err != nil || len(history) != 2 || history[1].State != sequencer.Failed || history[1].ErrorDetail != sequencer.ErrBudgetExhausted.Error() {
+		t.Fatalf("History() = %+v, %v", history, err)
+	}
+	if want := []sequencer.EventType{sequencer.EventClaimed, sequencer.EventCompleted}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	audit, err := store.Audit(context.Background(), spec.ID, spec.Version, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := audit[len(audit)-1]
+	if last.Attempt != 2 || last.From != sequencer.Claimed || last.To != sequencer.Failed {
+		t.Fatalf("terminal audit = %+v, want claimed -> failed for attempt 2", last)
+	}
+}
+
+func TestRecoveredBudgetSettlementFailsClosedWhenDurabilityFails(t *testing.T) {
+	t.Parallel()
+
+	for _, asynchronous := range []bool{false, true} {
+		name := "runner"
+		if asynchronous {
+			name = "fleet"
+		}
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 8, 11, 13, 0, 0, 0, time.UTC)
+			spec := validSpec(sequencer.OperationID("recovery-budget-durability-" + name))
+			spec.Policy.UnknownOutcome = sequencer.UnknownOutcomeReplayIdempotent
+			inner := memory.New()
+			registration := sequencer.Registration{
+				ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel,
+				UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
+			}
+			if err := inner.Register(context.Background(), []sequencer.Registration{registration}, now); err != nil {
+				t.Fatal(err)
+			}
+			claim, err := inner.ClaimNext(context.Background(), sequencer.ClaimRequest{
+				Candidates: []sequencer.ClaimCandidate{{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel}},
+				Owner:      "lost", Now: now, LeaseDuration: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := inner.MarkRunning(context.Background(), claim.Ownership(), now); err != nil {
+				t.Fatal(err)
+			}
+			if recovered, err := inner.RecoverExpired(context.Background(), now.Add(2*time.Second)); err != nil || recovered != 1 {
+				t.Fatalf("RecoverExpired() = %d, %v", recovered, err)
+			}
+
+			cause := errors.New("ledger unavailable")
+			store := &completionFailureStore{Store: inner, err: cause}
+			plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			clock := newManualClock(now.Add(2 * time.Second))
+			if !asynchronous {
+				runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replacement", Clock: clock})
+				if err != nil {
+					t.Fatal(err)
+				}
+				report, err := runner.Execute(context.Background())
+				if !errors.Is(err, cause) || len(report.Operations) != 1 || report.Operations[0].Attempts != 2 {
+					t.Fatalf("Execute() = %+v, %v", report, err)
+				}
+			} else {
+				fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
+					RunnerOptions: sequencer.RunnerOptions{Owner: "replacement", Clock: clock},
+					ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+					MaxConcurrency: 1, ShutdownWait: time.Second,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+				if err := fleet.Run(ctx); !errors.Is(err, cause) || fleet.State() != sequencer.RunnerFailed {
+					t.Fatalf("Run() error = %v, state = %s", err, fleet.State())
+				}
+			}
+			record, err := inner.Snapshot(context.Background(), spec.ID, spec.Version)
+			if err != nil || record.State != sequencer.Claimed || record.AttemptNumber != 2 {
+				t.Fatalf("Snapshot() = %+v, %v", record, err)
+			}
+		})
+	}
+}
+
 func TestRunnerRequiresDeclaredApprovalAndEnvironment(t *testing.T) {
 	t.Parallel()
 

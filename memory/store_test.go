@@ -228,6 +228,16 @@ func TestStoreRejectsOwnershipWritesAtLeaseExpiry(t *testing.T) {
 	}); !errors.Is(err, sequencer.ErrStaleOwner) {
 		t.Fatalf("expired Complete() error = %v", err)
 	}
+	mismatchStore, mismatchClaim := newClaim("completion-source-mismatch")
+	if err := mismatchStore.Complete(ctx, sequencer.Completion{
+		Ownership: mismatchClaim.Ownership(), State: sequencer.Failed, At: now,
+	}); !errors.Is(err, sequencer.ErrInvalidTransition) {
+		t.Fatalf("Complete(source mismatch) error = %v", err)
+	}
+	mismatchRecord, err := mismatchStore.Snapshot(ctx, "completion-source-mismatch", 1)
+	if err != nil || mismatchRecord.State != sequencer.Claimed {
+		t.Fatalf("Snapshot(source mismatch) = %+v, %v", mismatchRecord, err)
+	}
 
 	for _, markAt := range []time.Time{{}, now.Add(-time.Nanosecond)} {
 		store, claim := newClaim("invalid-mark-time")

@@ -7,7 +7,7 @@ GOVULNCHECK_VERSION ?= v1.6.0
 ACTIONLINT_VERSION ?= v1.7.12
 
 .PHONY: benchmark check coverage docs format format-check fuzz integration \
-	lint mutation race safety staticcheck test tidy-check vet vuln workflows
+	kubernetes lint mutation race safety staticcheck test tidy-check vet vuln workflows
 
 format:
 	gofmt -w .
@@ -21,8 +21,11 @@ tidy-check:
 test:
 	GOWORK=off $(GO) test ./...
 
-integration:
+integration: kubernetes
 	GOWORK=off $(GO) test -tags=integration -timeout=10m ./...
+
+kubernetes:
+	./scripts/check-kubernetes-lifecycle.sh
 
 race:
 	GOWORK=off $(GO) test -race ./...
@@ -39,6 +42,8 @@ mutation:
 
 benchmark:
 	GOWORK=off $(GO) test ./... -run '^$$' -bench . -benchmem -benchtime="$(BENCH_TIME)"
+	GOWORK=off $(GO) test -tags=integration ./postgres -run '^$$' \
+		-bench Postgres -benchmem -benchtime="$(BENCH_TIME)"
 
 vet:
 	GOWORK=off $(GO) vet ./...

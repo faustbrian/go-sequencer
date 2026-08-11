@@ -44,15 +44,23 @@ restart a healthy pod merely because there is no eligible work.
 
 ## Termination sequence
 
-Treat cancellation of `Fleet.Run` as SIGTERM. The owned order is:
+The application must forward process signals into `Fleet.Run`; the package does
+not install global signal handlers. A typical entry point uses
+`signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`,
+defers the returned stop function, and passes that context to `Run`. Treat that
+context cancellation as SIGTERM. The owned order is:
 
 1. move from `accepting` to `draining`, making readiness false;
 2. stop initiating claims;
 3. deliver cancellation only to `CancellationCooperative` handlers;
 4. continue fenced renewal while accepted attempts settle;
-5. stop each renewal loop before recording that attempt's completion;
+5. stop each renewal loop and its `EventHeartbeat` emissions before recording
+   that attempt's completion;
 6. after `ShutdownWait`, stop remaining renewals and return
    `ErrShutdownTimeout` in the `failed` state.
+
+After `Run` returns, no renewal loop or heartbeat emission owned by that fleet
+remains. `ClaimInterval` is finite and cannot exceed one minute.
 
 Registration, recovery, claim, cancellation-detached `MarkRunning`, and final
 completion calls are limited by `ShutdownWait`. Each renewal is limited by

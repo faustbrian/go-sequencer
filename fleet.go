@@ -363,6 +363,22 @@ func (fleet *Fleet) waitForDrain(results <-chan error, active uint64) error {
 }
 
 func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation Operation, claim Claim) error {
+	if executionErr := attemptBudgetError(claim.Budget, operation.spec.Policy); executionErr != nil {
+		fleet.renewalStarts.Done()
+		state := classifyState(executionErr, operation.spec.Policy, claim.Budget.Attempt, claim.Budget.Exceptions)
+		completion := Completion{
+			Ownership: claim.Ownership(), From: Claimed, State: state,
+			At: fleet.options.Clock.Now(), ErrorDetail: persistentErrorDetail(executionErr),
+		}
+		completionContext, cancelCompletion := context.WithTimeout(context.WithoutCancel(ctx), fleet.options.ShutdownWait)
+		err := fleet.store.Complete(completionContext, completion)
+		cancelCompletion()
+		if err != nil {
+			return fmt.Errorf("sequencer: complete accepted attempt: %w", err)
+		}
+		fleet.observe(Event{Type: EventCompleted, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
+		return nil
+	}
 	attemptParent := ctx
 	if operation.spec.Policy.Cancellation == CancellationDrainOnly {
 		attemptParent = context.Background()
@@ -377,7 +393,6 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 		fleet.renewLease(renewContext, renewalReady, cancelAttempt, claim.Ownership(), claim.Attempt.Number, claim.Until, renewalStopped, renewalError)
 	})
 	fleet.renewalStarts.Done()
-
 	now := fleet.options.Clock.Now()
 	markContext, cancelMark := context.WithTimeout(context.WithoutCancel(ctx), fleet.options.ShutdownWait)
 	_, markErr := fleet.store.MarkRunning(markContext, claim.Ownership(), now)
@@ -391,6 +406,8 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 	fleet.observe(Event{Type: EventRunning, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Running, At: now})
 
 	worker := &Runner{options: fleet.options.RunnerOptions}
+	var output Output
+	var actor, reason string
 	output, actor, reason, executionErr := worker.runAttempt(attemptContext, operation.spec, claim.Attempt)
 	stopRenewal()
 	<-renewalStopped

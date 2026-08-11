@@ -288,6 +288,13 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if !ownershipValid(completion.Ownership) {
 		return sequencer.ErrInvalidOperation
 	}
+	from := completion.From
+	if from == 0 {
+		from = sequencer.Running
+	}
+	if err := sequencer.ValidateTransition(from, completion.State); err != nil {
+		return err
+	}
 	if completion.State == sequencer.Retryable && !completion.RetryException ||
 		completion.RetryException && completion.State != sequencer.Retryable && completion.State != sequencer.Failed && completion.State != sequencer.DeadLettered {
 		return sequencer.ErrInvalidOperation
@@ -312,8 +319,8 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if err != nil {
 		return err
 	}
-	if err := sequencer.ValidateTransition(current.record.State, completion.State); err != nil {
-		return err
+	if current.record.State != from {
+		return sequencer.ErrInvalidTransition
 	}
 	if completion.At.IsZero() || completion.At.Before(current.record.UpdatedAt) {
 		return sequencer.ErrInvalidOperation
@@ -324,7 +331,6 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if completion.RetryException && current.record.RetryExceptions == ^uint(0) {
 		return sequencer.ErrResourceLimit
 	}
-	from := current.record.State
 	current.record.State = completion.State
 	current.record.UpdatedAt = completion.At
 	current.record.LeaseExpiresAt = time.Time{}

@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Preserve ambiguous drain-only timeout outcomes as indeterminate, prevent
+  recovered attempts from invoking handlers or reporting a running transition
+  beyond `MaxAttempts`, require exact unrounded package coverage, and include
+  real PostgreSQL restart and benchmark evidence in resilience verification.
 - Block expired claimed or running work as `indeterminate` by default;
   automatic replay now requires an explicit idempotent unknown-outcome policy,
   while manual reconciliation is attributed and bound to the exact attempt and

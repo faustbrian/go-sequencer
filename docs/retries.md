@@ -16,6 +16,8 @@ reset starts a fresh replay epoch; ordinary retry eligibility and unknown-result
 reconciliation retain the current counters. A `Retryable` completion must mark
 the typed retry exception, while permanent and unknown outcomes cannot spend
 that exception budget implicitly.
+An unknown-outcome replay claim beyond `MaxAttempts` is durably failed with
+`ErrBudgetExhausted` without invoking the handler.
 
 Select exactly one retry owner. `DurableRetries` is the default and creates a
 new fenced ledger attempt for each typed `sequencer.Retry`. It does not expose

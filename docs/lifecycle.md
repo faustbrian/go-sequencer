@@ -1,10 +1,14 @@
 # Operation lifecycle
 
 Registration projects a new definition from pending to eligible. A replica
-claims eligible work, receives a monotonically increasing fencing token, marks
-the attempt running, and completes it as succeeded, skipped, failed, retryable,
-deferred, blocked, canceled, or dead-lettered. Lease expiry moves claimed or
-running work to indeterminate before any replay decision.
+claims eligible work and receives a monotonically increasing fencing token. An
+attempt with remaining execution budget is marked running immediately before
+handler execution, then completes as succeeded, skipped, failed, retryable,
+deferred, blocked, canceled, or dead-lettered. A recovered claim whose shared
+budget is already exhausted settles directly from claimed to failed or
+dead-lettered; it never emits a running boundary because no handler starts.
+Lease expiry moves claimed or running work to indeterminate before any replay
+decision.
 
 Retryable and deferred records become eligible only at their declared instant.
 A one-time success is not executed again by an ordinary run. A second explicit
@@ -34,3 +38,6 @@ withholds shutdown cancellation when interruption is unsafe. If it exceeds the
 bounded shutdown wait, the fleet fails, renewal stops, and Kubernetes must end
 the pod. Lease recovery records an indeterminate result and does not replay it
 unless the registered policy explicitly authorizes idempotent replay.
+Its operation timeout still bounds waiting. If the handler ignores that
+deadline, a late return is persisted as indeterminate, never as a definite
+failure or success, because the external effect may have committed.

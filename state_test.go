@@ -20,7 +20,7 @@ func TestStateTransitionsAreExplicit(t *testing.T) {
 	allowed := map[sequencer.State]map[sequencer.State]bool{
 		sequencer.Pending:       {sequencer.Eligible: true, sequencer.Deferred: true, sequencer.Skipped: true, sequencer.Blocked: true, sequencer.Canceled: true},
 		sequencer.Eligible:      {sequencer.Claimed: true, sequencer.Deferred: true, sequencer.Skipped: true, sequencer.Blocked: true, sequencer.Canceled: true},
-		sequencer.Claimed:       {sequencer.Running: true, sequencer.Indeterminate: true, sequencer.Canceled: true},
+		sequencer.Claimed:       {sequencer.Running: true, sequencer.Failed: true, sequencer.DeadLettered: true, sequencer.Indeterminate: true, sequencer.Canceled: true},
 		sequencer.Running:       {sequencer.Succeeded: true, sequencer.Skipped: true, sequencer.Failed: true, sequencer.DeadLettered: true, sequencer.Retryable: true, sequencer.Deferred: true, sequencer.Blocked: true, sequencer.Canceled: true, sequencer.Indeterminate: true},
 		sequencer.Retryable:     {sequencer.Eligible: true, sequencer.Failed: true, sequencer.DeadLettered: true, sequencer.Canceled: true},
 		sequencer.Deferred:      {sequencer.Eligible: true, sequencer.Canceled: true},

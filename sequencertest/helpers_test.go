@@ -75,7 +75,7 @@ func TestFaultStoreForwardsEveryStoreBoundary(t *testing.T) {
 	if _, err := store.RenewLease(ctx, claim.Ownership(), now.Add(time.Second), time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Complete(ctx, sequencer.Completion{Ownership: claim.Ownership(), State: sequencer.Succeeded, At: now}); err != nil {
+	if err := store.Complete(ctx, sequencer.Completion{Ownership: claim.Ownership(), State: sequencer.Succeeded, At: now.Add(time.Second)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Snapshot(ctx, "a", 1); err != nil {
@@ -87,7 +87,7 @@ func TestFaultStoreForwardsEveryStoreBoundary(t *testing.T) {
 	if _, err := store.Audit(ctx, "a", 1, 10); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Reset(ctx, sequencer.ResetRequest{OperationID: "a", Version: 1, Actor: "op", Reason: "retry", At: now}); err != nil {
+	if err := store.Reset(ctx, sequencer.ResetRequest{OperationID: "a", Version: 1, Actor: "op", Reason: "retry", At: now.Add(2 * time.Second)}); err != nil {
 		t.Fatal(err)
 	}
 

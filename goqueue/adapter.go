@@ -11,7 +11,13 @@ import (
 	sequencer "github.com/faustbrian/golib/pkg/sequencer"
 )
 
-var channelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
+var (
+	channelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
+)
+
+const (
+	maxDeliveryIDBytes = 255
+)
 
 var (
 	// ErrInvalidAdapter reports incomplete asynchronous dependencies or messages.
@@ -76,7 +82,8 @@ func NewDispatcher(publisher Publisher, topic string) (*Dispatcher, error) {
 // Dispatch publishes an operation command. It never claims cross-operation
 // or enqueue-to-worker transaction atomicity.
 func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Message, error) {
-	if request.OperationID == "" || request.Version == 0 || request.Checksum == "" ||
+	if !request.OperationID.Valid() || request.Version == 0 ||
+		request.Checksum == "" || len(request.Checksum) > sequencer.DefaultMaxChecksumBytes ||
 		(request.Channel != "" && !channelPattern.MatchString(request.Channel)) ||
 		(dispatcher.channel != "" && request.Channel != dispatcher.channel) {
 		return Message{}, ErrInvalidAdapter
@@ -172,7 +179,9 @@ func (worker *Worker) HandleDelivery(ctx context.Context, message Message, settl
 }
 
 func validMessage(message Message, expectedChannel string) bool {
-	if message.OperationID == "" || message.Version == 0 || message.Checksum == "" || message.DeliveryID == "" {
+	if !message.OperationID.Valid() || message.Version == 0 ||
+		message.Checksum == "" || len(message.Checksum) > sequencer.DefaultMaxChecksumBytes ||
+		message.DeliveryID == "" || len(message.DeliveryID) > maxDeliveryIDBytes {
 		return false
 	}
 	if expectedChannel != "" {

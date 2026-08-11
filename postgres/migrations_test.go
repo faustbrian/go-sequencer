@@ -32,7 +32,10 @@ func TestMigrationsExposePinnedDependencyExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
-	for _, required := range []string{"dependency_refs", "jsonb", "cardinality(dependencies) = 0"} {
+	for _, required := range []string{
+		"dependency_refs", "jsonb", "cardinality(dependencies) = 0",
+		"unknown_outcome", "dead_letter", "compensates", "indeterminate", "dead_lettered",
+	} {
 		if !strings.Contains(string(data), required) {
 			t.Errorf("migration missing %q", required)
 		}

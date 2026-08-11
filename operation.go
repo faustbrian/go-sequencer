@@ -30,8 +30,18 @@ const (
 	DefaultMaxOperations = 10_000
 	// DefaultMaxDependencies bounds direct dependencies per operation.
 	DefaultMaxDependencies = 256
+	// DefaultMaxChecksumBytes bounds one reviewed definition checksum.
+	DefaultMaxChecksumBytes = 512
+	// DefaultMaxDescriptionBytes bounds one operation description.
+	DefaultMaxDescriptionBytes = 4 << 10
 	// DefaultMaxTags bounds tags per operation.
 	DefaultMaxTags = 64
+	// DefaultMaxTagBytes bounds one operation tag.
+	DefaultMaxTagBytes = 255
+	// DefaultMaxEnvironments bounds environment selectors per operation.
+	DefaultMaxEnvironments = 64
+	// DefaultMaxEnvironmentBytes bounds one environment selector.
+	DefaultMaxEnvironmentBytes = 255
 	// DefaultMaxGraphDepth bounds dependency traversal depth.
 	DefaultMaxGraphDepth = 1_024
 	// DefaultMaxOutputBytes bounds persisted output summaries.
@@ -48,6 +58,10 @@ var identifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
 
 // OperationID is a stable identifier shared by code, the ledger, and audit logs.
 type OperationID string
+
+// Valid reports whether the identifier satisfies the stable lowercase,
+// 255-byte operation identifier grammar.
+func (id OperationID) Valid() bool { return identifierPattern.MatchString(string(id)) }
 
 // DependencyRef pins one prerequisite to an exact durable definition.
 type DependencyRef struct {
@@ -89,6 +103,17 @@ const (
 	InlineRetries
 )
 
+// UnknownOutcomePolicy controls whether lease recovery may authorize replay.
+type UnknownOutcomePolicy uint8
+
+const (
+	// UnknownOutcomeBlock requires explicit reconciliation before replay.
+	UnknownOutcomeBlock UnknownOutcomePolicy = iota
+	// UnknownOutcomeReplayIdempotent declares that replay is protected by an
+	// application-owned idempotency boundary.
+	UnknownOutcomeReplayIdempotent
+)
+
 // Policy declares bounded execution and failure behavior.
 type Policy struct {
 	Mode              ExecutionMode
@@ -101,6 +126,7 @@ type Policy struct {
 	DeadLetter        bool
 	Cancellation      CancellationMode
 	RetryMode         RetryMode
+	UnknownOutcome    UnknownOutcomePolicy
 }
 
 // Output is the bounded, non-secret result safe to retain in the ledger.
@@ -165,6 +191,9 @@ type OperationSpec struct {
 	Tags           []string
 	Channel        string
 	DependencyRefs []DependencyRef
+	// Compensates identifies the exact forward operation related to this
+	// independent operation. It must also be an explicit dependency.
+	Compensates *DependencyRef
 	// Dependencies is retained for source compatibility. Non-empty legacy
 	// references are rejected because selecting a dependency by ID is unsafe
 	// when multiple binary versions share a ledger.
@@ -180,29 +209,50 @@ type Operation struct{ spec OperationSpec }
 
 // NewOperation validates and freezes a definition.
 func NewOperation(spec OperationSpec) (Operation, error) {
-	if !identifierPattern.MatchString(string(spec.ID)) || spec.Version == 0 ||
-		spec.Checksum == "" || spec.Description == "" || !identifierPattern.MatchString(spec.Channel) ||
+	if !spec.ID.Valid() || spec.Version == 0 ||
+		spec.Checksum == "" || len(spec.Checksum) > DefaultMaxChecksumBytes ||
+		spec.Description == "" || len(spec.Description) > DefaultMaxDescriptionBytes ||
+		!identifierPattern.MatchString(spec.Channel) ||
 		spec.Handler == nil || spec.Policy.MaxAttempts == 0 || spec.Policy.MaxExceptions == 0 ||
 		(spec.Policy.Mode != OneTime && spec.Policy.Mode != Repeatable) ||
 		spec.Policy.Cancellation > CancellationDrainOnly ||
 		spec.Policy.RetryMode > InlineRetries ||
+		spec.Policy.UnknownOutcome > UnknownOutcomeReplayIdempotent ||
 		spec.Policy.Timeout <= 0 || len(spec.DependencyRefs) > DefaultMaxDependencies ||
-		len(spec.Tags) > DefaultMaxTags {
+		len(spec.Tags) > DefaultMaxTags || len(spec.Environments) > DefaultMaxEnvironments {
 		return Operation{}, ErrInvalidOperation
+	}
+	for _, tag := range spec.Tags {
+		if tag == "" || len(tag) > DefaultMaxTagBytes {
+			return Operation{}, ErrInvalidOperation
+		}
+	}
+	for _, environment := range spec.Environments {
+		if environment == "" || len(environment) > DefaultMaxEnvironmentBytes {
+			return Operation{}, ErrInvalidOperation
+		}
 	}
 	if len(spec.Dependencies) > 0 {
 		return Operation{}, ErrUnpinnedDependency
 	}
 	seen := make(map[OperationID]struct{}, len(spec.DependencyRefs))
+	compensationDependency := false
 	for _, dependency := range spec.DependencyRefs {
-		if dependency.ID == spec.ID || !identifierPattern.MatchString(string(dependency.ID)) ||
-			dependency.Version == 0 || dependency.Checksum == "" {
+		if dependency.ID == spec.ID || !dependency.ID.Valid() ||
+			dependency.Version == 0 || dependency.Checksum == "" || len(dependency.Checksum) > DefaultMaxChecksumBytes {
 			return Operation{}, fmt.Errorf("%w: invalid dependency %q", ErrInvalidOperation, dependency.ID)
 		}
 		if _, duplicate := seen[dependency.ID]; duplicate {
 			return Operation{}, fmt.Errorf("%w: duplicate dependency %q", ErrInvalidOperation, dependency.ID)
 		}
 		seen[dependency.ID] = struct{}{}
+		if spec.Compensates != nil && dependency == *spec.Compensates {
+			compensationDependency = true
+		}
+	}
+	if spec.Compensates != nil && (!compensationDependency || spec.Compensates.ID == spec.ID ||
+		spec.Compensates.Version == 0 || spec.Compensates.Checksum == "") {
+		return Operation{}, fmt.Errorf("%w: invalid compensation dependency", ErrInvalidOperation)
 	}
 	return Operation{spec: cloneSpec(spec)}, nil
 }
@@ -213,6 +263,10 @@ func (operation Operation) Spec() OperationSpec { return cloneSpec(operation.spe
 func cloneSpec(spec OperationSpec) OperationSpec {
 	spec.Tags = slices.Clone(spec.Tags)
 	spec.DependencyRefs = slices.Clone(spec.DependencyRefs)
+	if spec.Compensates != nil {
+		compensates := *spec.Compensates
+		spec.Compensates = &compensates
+	}
 	spec.Dependencies = slices.Clone(spec.Dependencies)
 	spec.Environments = slices.Clone(spec.Environments)
 	return spec

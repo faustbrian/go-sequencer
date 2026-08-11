@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	sequencer "github.com/faustbrian/golib/pkg/sequencer"
 )
 
 const (
@@ -64,13 +66,18 @@ func (adapter *Adapter) WithClaim(ctx context.Context, key string, ttl time.Dura
 	if err != nil {
 		return err
 	}
-	if handle == nil || handle.Owner() == "" || handle.Fencing() == 0 {
+	if handle == nil {
 		return ErrInvalidAdapter
 	}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.cleanupTimeout)
 		defer cancel()
-		err = errors.Join(err, handle.Release(cleanupCtx))
+		if releaseErr := handle.Release(cleanupCtx); releaseErr != nil {
+			err = sequencer.UnknownResult(errors.Join(err, releaseErr))
+		}
 	}()
+	if handle.Owner() == "" || handle.Fencing() == 0 {
+		return ErrInvalidAdapter
+	}
 	return execute(ctx, Ownership{Owner: handle.Owner(), Fencing: handle.Fencing()})
 }

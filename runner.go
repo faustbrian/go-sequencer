@@ -2,9 +2,9 @@ package sequencer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"math/bits"
 	"slices"
 	"time"
 )
@@ -136,17 +136,16 @@ func runsChannel(channels []string, channel string) bool {
 }
 
 func (runner *Runner) reportChannels() []string {
-	if len(runner.options.Channels) > 0 {
+	if len(runner.options.Channels) != 0 {
 		return slices.Clone(runner.options.Channels)
 	}
 	channels := make([]string, 0)
 	seen := make(map[string]struct{})
 	for _, operation := range runner.plan.operations {
-		if _, exists := seen[operation.spec.Channel]; exists {
-			continue
+		if _, exists := seen[operation.spec.Channel]; !exists {
+			seen[operation.spec.Channel] = struct{}{}
+			channels = append(channels, operation.spec.Channel)
 		}
-		seen[operation.spec.Channel] = struct{}{}
-		channels = append(channels, operation.spec.Channel)
 	}
 	slices.Sort(channels)
 	return channels
@@ -154,7 +153,7 @@ func (runner *Runner) reportChannels() []string {
 
 // NewRunner validates execution dependencies and declared constraints.
 func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) {
-	if plan == nil || store == nil || options.Owner == "" {
+	if plan == nil || store == nil || options.Owner == "" || len(options.Owner) > DefaultMaxActorBytes {
 		return nil, ErrInvalidRunner
 	}
 	if options.LeaseDuration < 0 || len(options.Observers) > 128 {
@@ -169,10 +168,15 @@ func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) 
 	options.Observers = slices.Clone(options.Observers)
 	options.Channels = slices.Clone(options.Channels)
 	slices.Sort(options.Channels)
-	for index, channel := range options.Channels {
-		if !identifierPattern.MatchString(channel) || (index > 0 && channel == options.Channels[index-1]) {
+	seenChannels := make(map[string]struct{}, len(options.Channels))
+	for _, channel := range options.Channels {
+		if !identifierPattern.MatchString(channel) {
 			return nil, ErrInvalidRunner
 		}
+		if _, exists := seenChannels[channel]; exists {
+			return nil, ErrInvalidRunner
+		}
+		seenChannels[channel] = struct{}{}
 	}
 	knownChannels := make(map[string]struct{})
 	for _, operation := range plan.operations {
@@ -185,20 +189,19 @@ func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) 
 	}
 	for _, operation := range plan.operations {
 		spec := operation.spec
-		if !runsChannel(options.Channels, spec.Channel) {
-			continue
-		}
-		if len(spec.Environments) > 0 && !slices.Contains(spec.Environments, options.Environment) {
-			return nil, fmt.Errorf("%w: %s", ErrEnvironmentForbidden, spec.ID)
-		}
-		if spec.Policy.RequiresApproval && options.Approver == nil {
-			return nil, fmt.Errorf("%w: %s", ErrApprovalRequired, spec.ID)
-		}
-		if spec.Policy.WithinTransaction && options.Transactions == nil {
-			return nil, fmt.Errorf("%w: transaction manager required for %s", ErrInvalidRunner, spec.ID)
-		}
-		if spec.Policy.Timeout >= options.LeaseDuration {
-			return nil, fmt.Errorf("%w: timeout must be shorter than lease for %s", ErrInvalidRunner, spec.ID)
+		if runsChannel(options.Channels, spec.Channel) {
+			if len(spec.Environments) > 0 && !slices.Contains(spec.Environments, options.Environment) {
+				return nil, fmt.Errorf("%w: %s", ErrEnvironmentForbidden, spec.ID)
+			}
+			if spec.Policy.RequiresApproval && options.Approver == nil {
+				return nil, fmt.Errorf("%w: %s", ErrApprovalRequired, spec.ID)
+			}
+			if spec.Policy.WithinTransaction && options.Transactions == nil {
+				return nil, fmt.Errorf("%w: transaction manager required for %s", ErrInvalidRunner, spec.ID)
+			}
+			if spec.Policy.Timeout >= options.LeaseDuration {
+				return nil, fmt.Errorf("%w: timeout must be shorter than lease for %s", ErrInvalidRunner, spec.ID)
+			}
 		}
 	}
 	return &Runner{plan: plan, store: store, options: options}, nil
@@ -213,6 +216,8 @@ func (runner *Runner) Execute(ctx context.Context) (Report, error) {
 			ID: operation.spec.ID, Version: operation.spec.Version,
 			Checksum: operation.spec.Checksum, Channel: operation.spec.Channel,
 			DependencyRefs: slices.Clone(operation.spec.DependencyRefs),
+			Compensates:    operation.spec.Compensates, UnknownOutcome: operation.spec.Policy.UnknownOutcome,
+			DeadLetter: operation.spec.Policy.DeadLetter,
 		})
 	}
 	if err := runner.store.Register(ctx, registrations, report.StartedAt); err != nil {
@@ -243,15 +248,41 @@ func (runner *Runner) Execute(ctx context.Context) (Report, error) {
 func (runner *Runner) executeOperation(ctx context.Context, operation Operation) (OperationResult, error) {
 	spec := operation.spec
 	result := OperationResult{OperationID: spec.ID, Version: spec.Version, Channel: spec.Channel}
-	if record, err := runner.store.Snapshot(ctx, spec.ID, spec.Version); err == nil {
-		if record.State == Skipped || (record.State == Succeeded && spec.Policy.Mode == OneTime) {
+	record, err := runner.store.Snapshot(ctx, spec.ID, spec.Version)
+	if err != nil {
+		result.Err = err
+		return result, err
+	}
+	if record.State == Skipped || record.State == RolledBack || (record.State == Succeeded && spec.Policy.Mode == OneTime) {
+		result.State = record.State
+		result.Attempts = record.AttemptNumber
+		return result, nil
+	}
+	if record.State == Succeeded && spec.Policy.Mode == Repeatable {
+		resetAt := runner.options.Clock.Now()
+		if resetAt.Before(record.UpdatedAt) {
+			resetAt = record.UpdatedAt
+		}
+		if err := runner.store.Reset(ctx, ResetRequest{
+			OperationID: spec.ID,
+			Version:     spec.Version,
+			Actor:       runner.options.Owner,
+			Reason:      "repeatable execution requested",
+			At:          resetAt,
+		}); err != nil {
 			result.State = record.State
 			result.Attempts = record.AttemptNumber
-			return result, nil
+			result.Err = err
+			return result, err
 		}
 	}
-	exceptions := uint(0)
-	for attemptsThisRun := uint(1); ; attemptsThisRun = nextAttempt(attemptsThisRun) {
+	if !canClaimRecord(record.State, spec.Policy.Mode) {
+		result.State = record.State
+		result.Attempts = record.AttemptNumber
+		result.Err = durableStateError(record.State)
+		return result, result.Err
+	}
+	for {
 		now := runner.options.Clock.Now()
 		claim, err := runner.store.ClaimNext(ctx, ClaimRequest{
 			Candidates: []ClaimCandidate{{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel}}, Owner: runner.options.Owner,
@@ -260,6 +291,10 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 		if err != nil {
 			result.Err = err
 			return result, err
+		}
+		if claim.Budget.Attempt == 0 {
+			result.Err = ErrInvalidOperation
+			return result, result.Err
 		}
 		result.Attempts = claim.Attempt.Number
 		runner.observe(Event{Type: EventClaimed, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: Claimed, At: now})
@@ -270,14 +305,16 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 		runner.observe(Event{Type: EventRunning, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: Running, At: now})
 
 		output, actor, reason, executionErr := runner.runAttempt(ctx, spec, claim.Attempt)
-		if errors.Is(executionErr, ErrRetryable) {
+		retryException := spec.Policy.RetryMode == DurableRetries && errors.Is(executionErr, ErrRetryable)
+		exceptions := claim.Budget.Exceptions
+		if retryException {
 			exceptions = nextAttempt(exceptions)
 		}
-		state := classifyState(executionErr, spec.Policy.RetryMode, attemptsThisRun, spec.Policy.MaxAttempts, exceptions, spec.Policy.MaxExceptions)
+		state := classifyState(executionErr, spec.Policy, claim.Budget.Attempt, exceptions)
 		completion := Completion{
 			Ownership: claim.Ownership(), State: state,
 			At: runner.options.Clock.Now(), Output: output,
-			Actor: actor, Reason: reason,
+			Actor: actor, Reason: reason, RetryException: retryException,
 		}
 		if executionErr != nil {
 			completion.ErrorDetail = persistentErrorDetail(executionErr)
@@ -301,9 +338,31 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 	}
 }
 
+func canClaimRecord(state State, mode ExecutionMode) bool {
+	return state == Eligible || state == Retryable || state == Deferred || (state == Succeeded && mode == Repeatable)
+}
+
+func durableStateError(state State) error {
+	switch state {
+	case Blocked:
+		return ErrBlocked
+	case Canceled:
+		return ErrCanceled
+	case Indeterminate:
+		return ErrUnknownResult
+	case Pending, Eligible, Claimed, Running, Succeeded, Skipped, Failed,
+		Retryable, Deferred, RolledBack, DeadLettered:
+		return ErrPermanent
+	default:
+		return ErrInvalidOperation
+	}
+}
+
 func nextAttempt(current uint) uint {
-	next, _ := bits.Add64(uint64(current), 1, 0)
-	return uint(next)
+	if current == ^uint(0) {
+		return current
+	}
+	return current + 1
 }
 
 func (runner *Runner) runAttempt(ctx context.Context, spec OperationSpec, attempt Attempt) (Output, string, string, error) {
@@ -311,6 +370,9 @@ func (runner *Runner) runAttempt(ctx context.Context, spec OperationSpec, attemp
 	if spec.Policy.RequiresApproval {
 		approval, err := runner.options.Approver.Approve(ctx, cloneSpec(spec))
 		actor, reason = approval.Actor, approval.Reason
+		if len(actor) > DefaultMaxActorBytes || len(reason) > DefaultMaxReasonBytes {
+			return Output{}, "", "", Block(ErrResourceLimit)
+		}
 		if err != nil || !approval.Approved || actor == "" || reason == "" {
 			return Output{}, actor, reason, Block(errors.Join(ErrBlocked, err))
 		}
@@ -333,17 +395,58 @@ func (runner *Runner) invoke(ctx context.Context, spec OperationSpec, attempt At
 	ctx, cancel := context.WithTimeout(ctx, spec.Policy.Timeout)
 	defer cancel()
 	if !spec.Policy.WithinTransaction {
-		return executeAttempt(ctx, spec, attempt)
+		output, reason, err := executeAttempt(ctx, spec, attempt)
+		return attemptContextOutcome(ctx, output, reason, err)
 	}
 	var output Output
 	var reason string
-	err := runner.options.Transactions.Within(ctx, func(transactionContext context.Context, transaction any) error {
-		attempt.Transaction = transaction
-		var err error
-		output, reason, err = executeAttempt(transactionContext, spec, attempt)
-		return err
-	})
-	return output, reason, err
+	var callbackErr error
+	calls := 0
+	contractErr := fmt.Errorf("%w: transaction manager contract violation", ErrInvalidRunner)
+	managerPanicked := false
+	var managerErr error
+	func() {
+		defer func() {
+			if recover() != nil {
+				managerPanicked = true
+			}
+		}()
+		managerErr = runner.options.Transactions.Within(ctx, func(transactionContext context.Context, transaction any) error {
+			calls++
+			if calls != 1 {
+				callbackErr = contractErr
+				return callbackErr
+			}
+			if transactionContext == nil || transaction == nil {
+				callbackErr = contractErr
+				return callbackErr
+			}
+			attempt.Transaction = transaction
+			output, reason, callbackErr = executeAttempt(transactionContext, spec, attempt)
+			return callbackErr
+		})
+	}()
+	var result Output
+	var resultReason string
+	var resultErr error
+	switch {
+	case calls == 0:
+		resultErr = errors.Join(contractErr, managerErr)
+	case calls != 1, managerPanicked:
+		resultErr = UnknownResult(errors.Join(contractErr, callbackErr, managerErr))
+	case callbackErr != nil && (managerErr == nil || !errors.Is(managerErr, callbackErr)):
+		resultErr = UnknownResult(errors.Join(contractErr, callbackErr, managerErr))
+	default:
+		result, resultReason, resultErr = output, reason, managerErr
+	}
+	return attemptContextOutcome(ctx, result, resultReason, resultErr)
+}
+
+func attemptContextOutcome(ctx context.Context, output Output, reason string, err error) (Output, string, error) {
+	if errors.Is(err, ErrUnknownResult) || ctx.Err() == nil {
+		return output, reason, err
+	}
+	return Output{}, "", ctx.Err()
 }
 
 func executeAttempt(ctx context.Context, spec OperationSpec, attempt Attempt) (output Output, reason string, err error) {
@@ -351,7 +454,7 @@ func executeAttempt(ctx context.Context, spec OperationSpec, attempt Attempt) (o
 		if recover() != nil {
 			output = Output{}
 			reason = ""
-			err = Permanent(errors.New("sequencer: handler panic"))
+			err = UnknownResult(errors.New("sequencer: handler panic"))
 		}
 	}()
 	if spec.Condition != nil {
@@ -360,6 +463,9 @@ func executeAttempt(ctx context.Context, spec OperationSpec, attempt Attempt) (o
 			return Output{}, "", Permanent(conditionErr)
 		}
 		if !decision.Run {
+			if len(decision.Reason) > DefaultMaxReasonBytes {
+				return Output{}, "", Permanent(ErrResourceLimit)
+			}
 			if decision.Reason == "" {
 				decision.Reason = "condition declined execution"
 			}
@@ -370,7 +476,7 @@ func executeAttempt(ctx context.Context, spec OperationSpec, attempt Attempt) (o
 	return output, "", err
 }
 
-func classifyState(err error, retryMode RetryMode, attempt, maximum, exceptions, maxExceptions uint) State {
+func classifyState(err error, policy Policy, attempt, exceptions uint) State {
 	if err == nil {
 		return Succeeded
 	}
@@ -379,21 +485,30 @@ func classifyState(err error, retryMode RetryMode, attempt, maximum, exceptions,
 		return Skipped
 	case errors.Is(err, ErrBlocked):
 		return Blocked
+	case errors.Is(err, ErrUnknownResult):
+		return Indeterminate
 	case errors.Is(err, context.Canceled), errors.Is(err, ErrCanceled):
 		return Canceled
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrTimeout):
-		return Failed
+		return terminalFailureState(policy)
 	}
-	if retryMode != DurableRetries {
-		return Failed
+	if policy.RetryMode != DurableRetries {
+		return terminalFailureState(policy)
 	}
 	if !errors.Is(err, ErrRetryable) {
-		return Failed
+		return terminalFailureState(policy)
 	}
-	if attempt >= maximum || exceptions >= maxExceptions {
-		return Failed
+	if attempt >= policy.MaxAttempts || exceptions >= policy.MaxExceptions {
+		return terminalFailureState(policy)
 	}
 	return Retryable
+}
+
+func terminalFailureState(policy Policy) State {
+	if policy.DeadLetter {
+		return DeadLettered
+	}
+	return Failed
 }
 
 func persistentErrorDetail(err error) string {
@@ -425,10 +540,18 @@ func prepareOutput(output Output) (Output, error) {
 		if key == "" || len(key) > 128 || len(value) > 4_096 {
 			return Output{}, ErrResourceLimit
 		}
-		metadata[SanitizePersistenceText(key, 128)] = SanitizePersistenceText(value, 4_096)
+		sanitizedKey := SanitizePersistenceText(key, 128)
+		if _, duplicate := metadata[sanitizedKey]; duplicate {
+			return Output{}, ErrResourceLimit
+		}
+		metadata[sanitizedKey] = SanitizePersistenceText(value, 4_096)
 	}
 	if output.Metadata != nil {
 		output.Metadata = metadata
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil || len(encoded) > DefaultMaxOutputBytes {
+		return Output{}, ErrResourceLimit
 	}
 	return output, nil
 }

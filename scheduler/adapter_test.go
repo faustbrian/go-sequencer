@@ -3,9 +3,11 @@ package scheduler_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	sequencer "github.com/faustbrian/golib/pkg/sequencer"
 	"github.com/faustbrian/golib/pkg/sequencer/scheduler"
 )
 
@@ -35,6 +37,8 @@ func TestAdapterRejectsInvalidDependenciesAndRequests(t *testing.T) {
 	adapter, _ := scheduler.New(&schedulerStub{})
 	for _, request := range []scheduler.Request{
 		{Version: 1, EligibleAt: time.Now()},
+		{OperationID: "Invalid", Version: 1, EligibleAt: time.Now()},
+		{OperationID: sequencer.OperationID("a" + strings.Repeat("b", 255)), Version: 1, EligibleAt: time.Now()},
 		{OperationID: "a", EligibleAt: time.Now()},
 		{OperationID: "a", Version: 1},
 	} {

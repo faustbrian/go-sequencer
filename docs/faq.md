@@ -23,7 +23,7 @@ takeover, and handlers still need idempotency or reconciliation.
 
 Declare `CancellationDrainOnly`. SIGTERM stops claims but does not cancel that
 handler. If it outlives the shutdown bound, the fleet fails, renewal stops, and
-the pod must terminate. Lease expiry records an unknown result; lease release
+the pod must terminate. Lease expiry records an indeterminate result; lease release
 or pod deletion is never evidence that the side effect stopped.
 
 ## Can I change code without changing the version?

@@ -2,7 +2,10 @@
 
 `goqueue.Dispatcher` publishes operation ID, version, checksum, and a delivery
 identity. It does not serialize handler payloads, dependencies, transactions,
-or secrets. The application adapts this narrow publisher to queue.
+or secrets. Operation IDs use the 255-byte sequencer identifier grammar;
+checksums are limited to 512 bytes; delivery identities are limited to 255
+bytes. The application adapts this narrow publisher to queue and must apply a
+bounded transport decoder before constructing a message.
 
 A publisher error is always an unknown admission outcome. `Dispatch` returns
 the generated message together with `ErrPublishOutcomeUnknown`, preserving the

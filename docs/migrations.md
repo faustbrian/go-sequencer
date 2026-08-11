@@ -11,3 +11,42 @@ baseline, or mutate migration history.
 When an operation sits between schema changes, deploy the first schema phase,
 assert its version, execute and verify the operation, then deploy the second
 schema phase.
+
+## Pinned-dependency migration
+
+Apply `00002_pin_dependency_definitions.sql` as an expand migration before
+deploying binaries that persist exact dependency references. It initializes
+dependency-free rows to an empty reference set. Existing rows with legacy
+ID-only dependencies remain unresolved (`dependency_refs IS NULL`) and cannot
+be claimed. Existing rows also retain a NULL channel until deployment writes
+the reviewed exact channel; registration never treats NULL and an empty or
+non-empty channel as compatible.
+
+Use these deployment phases:
+
+1. **Expand:** apply the forward migration while old binaries remain schema
+   compatible. Do not introduce new dependency versions or begin a mixed-binary
+   operation rollout until every claiming binary uses exact references.
+2. **Data:** write each reviewed legacy channel explicitly, then register each
+   reviewed current definition with the exact dependency ID, version, and
+   checksum. Registration may resolve a legacy dependency row only when its
+   checksum, channel, and canonical dependency IDs match; never infer historical
+   channels, versions, or checksums from current defaults or whichever
+   dependency version is newest.
+3. **Prove:** require `SELECT count(*) FROM sequencer_operations WHERE
+   dependency_refs IS NULL` to return zero, then verify every pinned dependency
+   identity exists with its expected checksum before allowing contract work.
+4. **Enforce:** apply a later forward contract migration making
+   `dependency_refs` mandatory only after the proof passes. Stop the deployment
+   on any unresolved or drifting row; do not mark it resolved manually.
+
+For data-before-schema changes, keep old and new application versions compatible
+with the expanded schema, execute the pinned backfill, verify its ledger and
+data result, and only then apply the incompatible constraint, drop, rename, or
+type change. Roll back application code before the contract phase; after the
+contract phase, recovery is a new forward migration rather than an inferred
+ledger rewrite.
+
+The embedded ledger migrations are forward-only. Recovery from a bad schema
+change is a reviewed forward repair or restore; a generic down migration must
+not drop operation, attempt, or audit history.

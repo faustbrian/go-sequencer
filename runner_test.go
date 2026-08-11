@@ -2,6 +2,7 @@ package sequencer_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -85,6 +86,114 @@ func TestRunnerTreatsPersistedOneTimeSkipAsComplete(t *testing.T) {
 	}
 	if evaluations != 1 {
 		t.Fatalf("condition evaluations = %d, want 1", evaluations)
+	}
+}
+
+func TestRunnerExplicitlyResetsAndExecutesRepeatableSuccess(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("repeatable")
+	spec.Policy.Mode = sequencer.Repeatable
+	invocations := 0
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		invocations++
+		return sequencer.Output{Summary: "applied"}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{
+		Owner: "replica", Clock: newManualClock(time.Date(2026, 8, 10, 17, 0, 0, 0, time.UTC)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run := 1; run <= 2; run++ {
+		report, executeErr := runner.Execute(context.Background())
+		if executeErr != nil || report.Result != sequencer.RunSucceeded || report.Operations[0].State != sequencer.Succeeded {
+			t.Fatalf("Execute(%d) = %+v, %v", run, report, executeErr)
+		}
+	}
+	if invocations != 2 {
+		t.Fatalf("handler invocations = %d, want 2", invocations)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 10)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("History() = %+v, %v", history, err)
+	}
+	audit, err := store.Audit(context.Background(), spec.ID, spec.Version, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReset := false
+	for _, event := range audit {
+		if event.From == sequencer.Succeeded && event.To == sequencer.Eligible &&
+			event.Actor == "replica" && event.Reason == "repeatable execution requested" {
+			foundReset = true
+		}
+	}
+	if !foundReset {
+		t.Fatalf("repeatable reset audit missing: %+v", audit)
+	}
+}
+
+func TestRunnerBoundsRepeatableResetTimeAndPropagatesResetFailure(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 8, 10, 16, 0, 0, 0, time.UTC)
+	clock := newManualClock(base.Add(time.Minute))
+	spec := validSpec("repeatable-reset-failure")
+	spec.Policy.Mode = sequencer.Repeatable
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	first, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica", Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.Snapshot(context.Background(), spec.ID, spec.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.mu.Lock()
+	clock.now = base
+	clock.mu.Unlock()
+	cause := errors.New("reset unavailable")
+	failing := &resetFailureStore{Store: store, err: cause}
+	runner, err := sequencer.NewRunner(plan, failing, sequencer.RunnerOptions{Owner: "replica", Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); !errors.Is(err, cause) {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !failing.request.At.Equal(record.UpdatedAt) {
+		t.Fatalf("Reset() at = %s, want %s", failing.request.At, record.UpdatedAt)
+	}
+}
+
+func TestRunnerRejectsClaimWithoutDurableBudget(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("missing-durable-budget")
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &zeroBudgetStore{Store: memory.New()}
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); !errors.Is(err, sequencer.ErrInvalidOperation) {
+		t.Fatalf("Execute() error = %v", err)
 	}
 }
 
@@ -343,7 +452,7 @@ func TestRunnerPinsLocalRegistryAcrossRollingDeploymentAndRollback(t *testing.T)
 	store := memory.New()
 	now := time.Now()
 	if err := store.Register(context.Background(), []sequencer.Registration{{
-		ID: "rolling", Version: 2, Checksum: "sha256:v2",
+		ID: "rolling", Version: 2, Checksum: "sha256:v2", Channel: "deploy",
 	}}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -421,6 +530,134 @@ func TestRunnerUsesOneLocalTransactionPerAttempt(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsTransactionManagerContractViolations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		manager     transactionManagerFunc
+		handlerErr  error
+		want        error
+		wantState   sequencer.State
+		invocations int
+	}{
+		{
+			name:    "callback omitted",
+			manager: func(context.Context, func(context.Context, any) error) error { return nil },
+			want:    sequencer.ErrInvalidRunner, wantState: sequencer.Failed,
+		},
+		{
+			name: "callback repeated",
+			manager: func(ctx context.Context, execute func(context.Context, any) error) error {
+				_ = execute(ctx, &struct{}{})
+				return execute(ctx, &struct{}{})
+			},
+			want: sequencer.ErrUnknownResult, wantState: sequencer.Indeterminate, invocations: 1,
+		},
+		{
+			name: "callback error swallowed",
+			manager: func(ctx context.Context, execute func(context.Context, any) error) error {
+				_ = execute(ctx, &struct{}{})
+				return nil
+			},
+			handlerErr: errors.New("handler failed"),
+			want:       sequencer.ErrUnknownResult, wantState: sequencer.Indeterminate, invocations: 1,
+		},
+		{
+			name: "callback error replaced",
+			manager: func(ctx context.Context, execute func(context.Context, any) error) error {
+				_ = execute(ctx, &struct{}{})
+				return errors.New("manager replaced callback error")
+			},
+			handlerErr: errors.New("handler failed"),
+			want:       sequencer.ErrUnknownResult, wantState: sequencer.Indeterminate, invocations: 1,
+		},
+		{
+			name: "nil transaction",
+			manager: func(ctx context.Context, execute func(context.Context, any) error) error {
+				return execute(ctx, nil)
+			},
+			want: sequencer.ErrInvalidRunner, wantState: sequencer.Failed,
+		},
+		{
+			name: "manager panic before callback",
+			manager: func(context.Context, func(context.Context, any) error) error {
+				panic("manager panic")
+			},
+			want: sequencer.ErrInvalidRunner, wantState: sequencer.Failed,
+		},
+		{
+			name: "manager panic after callback",
+			manager: func(ctx context.Context, execute func(context.Context, any) error) error {
+				_ = execute(ctx, &struct{}{})
+				panic("manager panic")
+			},
+			want: sequencer.ErrUnknownResult, wantState: sequencer.Indeterminate, invocations: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			invocations := 0
+			spec := validSpec(sequencer.OperationID("transaction-contract-" + strings.ReplaceAll(test.name, " ", "-")))
+			spec.Policy.WithinTransaction = true
+			spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+				invocations++
+				return sequencer.Output{}, test.handlerErr
+			})
+			plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := memory.New()
+			runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "pod", Transactions: test.manager})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.Execute(context.Background()); !errors.Is(err, test.want) {
+				t.Fatalf("Execute() error = %v, want %v", err, test.want)
+			}
+			if invocations != test.invocations {
+				t.Fatalf("handler invocations = %d, want %d", invocations, test.invocations)
+			}
+			record, err := store.Snapshot(context.Background(), spec.ID, spec.Version)
+			if err != nil || record.State != test.wantState {
+				t.Fatalf("Snapshot() = %+v, %v; want %s", record, err, test.wantState)
+			}
+		})
+	}
+}
+
+func TestRunnerRejectsSuccessReturnedAfterAttemptDeadline(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("deadline.ignored")
+	spec.Policy.Timeout = time.Millisecond
+	spec.Handler = sequencer.HandlerFunc(func(ctx context.Context, _ sequencer.Attempt) (sequencer.Output, error) {
+		<-ctx.Done()
+		return sequencer.Output{Summary: "late success"}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Execute(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) || len(report.Operations) != 1 || report.Operations[0].State != sequencer.Failed {
+		t.Fatalf("Execute() report = %+v, error = %v", report, err)
+	}
+	history, err := store.History(context.Background(), spec.ID, spec.Version, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].State != sequencer.Failed || history[0].Output.Summary != "" {
+		t.Fatalf("history = %+v", history)
+	}
+}
+
 func TestRunnerRequiresDeclaredApprovalAndEnvironment(t *testing.T) {
 	t.Parallel()
 
@@ -435,6 +672,79 @@ func TestRunnerRequiresDeclaredApprovalAndEnvironment(t *testing.T) {
 	_, err = sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "replica", Environment: "production"})
 	if !errors.Is(err, sequencer.ErrApprovalRequired) {
 		t.Fatalf("NewRunner() error = %v", err)
+	}
+}
+
+func TestRunnerRejectsUnpersistableAuditMetadataBeforeHandlerEffects(t *testing.T) {
+	t.Parallel()
+
+	for name, approval := range map[string]sequencer.Approval{
+		"actor": {
+			Approved: true, Actor: strings.Repeat("a", sequencer.DefaultMaxActorBytes+1), Reason: "approved",
+		},
+		"reason": {
+			Approved: true, Actor: "operator", Reason: strings.Repeat("r", sequencer.DefaultMaxReasonBytes+1),
+		},
+	} {
+		t.Run("approval "+name, func(t *testing.T) {
+			called := false
+			spec := validSpec(sequencer.OperationID("approval-" + name))
+			spec.Policy.RequiresApproval = true
+			spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+				called = true
+				return sequencer.Output{}, nil
+			})
+			plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+			store := memory.New()
+			runner, _ := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", Approver: approverStub{approval: approval}})
+			report, err := runner.Execute(context.Background())
+			if !errors.Is(err, sequencer.ErrResourceLimit) || called || report.Operations[0].State != sequencer.Blocked {
+				t.Fatalf("Execute() = %+v, %v; called = %t", report, err, called)
+			}
+		})
+	}
+
+	called := false
+	exactApproval := sequencer.Approval{
+		Approved: true,
+		Actor:    strings.Repeat("a", sequencer.DefaultMaxActorBytes),
+		Reason:   strings.Repeat("r", sequencer.DefaultMaxReasonBytes),
+	}
+	exactSpec := validSpec("approval-exact-boundaries")
+	exactSpec.Policy.RequiresApproval = true
+	exactSpec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		called = true
+		return sequencer.Output{}, nil
+	})
+	exactPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{exactSpec}, sequencer.PlanOptions{})
+	exactStore := memory.New()
+	exactRunner, _ := sequencer.NewRunner(exactPlan, exactStore, sequencer.RunnerOptions{
+		Owner: "owner", Approver: approverStub{approval: exactApproval},
+	})
+	exactReport, err := exactRunner.Execute(context.Background())
+	if err != nil || !called || exactReport.Operations[0].State != sequencer.Succeeded {
+		t.Fatalf("exact-boundary Execute() = %+v, %v; called = %t", exactReport, err, called)
+	}
+	exactAudit, err := exactStore.Audit(context.Background(), exactSpec.ID, exactSpec.Version, 10)
+	if err != nil || len(exactAudit) == 0 || exactAudit[len(exactAudit)-1].Actor != exactApproval.Actor ||
+		exactAudit[len(exactAudit)-1].Reason != exactApproval.Reason {
+		t.Fatalf("exact-boundary Audit() = %+v, %v", exactAudit, err)
+	}
+
+	called = false
+	spec := validSpec("condition-reason-limit")
+	spec.Condition = sequencer.ConditionFunc(func(context.Context, sequencer.Attempt) (sequencer.Decision, error) {
+		return sequencer.Decision{Reason: strings.Repeat("r", sequencer.DefaultMaxReasonBytes+1)}, nil
+	})
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		called = true
+		return sequencer.Output{}, nil
+	})
+	plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	runner, _ := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "owner"})
+	report, err := runner.Execute(context.Background())
+	if !errors.Is(err, sequencer.ErrResourceLimit) || called || report.Operations[0].State != sequencer.Failed {
+		t.Fatalf("Execute() = %+v, %v; called = %t", report, err, called)
 	}
 }
 
@@ -538,6 +848,13 @@ func TestRunnerAuditsOnlyActualConditionReasons(t *testing.T) {
 			}),
 			wantActor: "condition", wantReason: "condition declined execution",
 		},
+		{
+			name: "exact-decline-reason",
+			condition: sequencer.ConditionFunc(func(context.Context, sequencer.Attempt) (sequencer.Decision, error) {
+				return sequencer.Decision{Run: false, Reason: strings.Repeat("r", sequencer.DefaultMaxReasonBytes)}, nil
+			}),
+			wantActor: "condition", wantReason: strings.Repeat("r", sequencer.DefaultMaxReasonBytes),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -565,13 +882,16 @@ func TestRunnerSanitizesFailuresAndRecoversPanics(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		handler sequencer.Handler
+		wantErr error
+		detail  error
+		state   sequencer.State
 	}{
 		{"error", sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
 			return sequencer.Output{}, errors.New("secret token abc")
-		})},
+		}), nil, sequencer.ErrPermanent, sequencer.Failed},
 		{"panic", sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
 			panic("secret panic")
-		})},
+		}), sequencer.ErrUnknownResult, sequencer.ErrUnknownResult, sequencer.Indeterminate},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			spec := validSpec(sequencer.OperationID(test.name))
@@ -579,11 +899,11 @@ func TestRunnerSanitizesFailuresAndRecoversPanics(t *testing.T) {
 			plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
 			store := memory.New()
 			runner, _ := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
-			if _, err := runner.Execute(context.Background()); err == nil {
-				t.Fatal("Execute() error = nil")
+			if _, err := runner.Execute(context.Background()); err == nil || test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("Execute() error = %v, want %v", err, test.wantErr)
 			}
 			history, _ := store.History(context.Background(), spec.ID, 1, 10)
-			if history[0].ErrorDetail != sequencer.ErrPermanent.Error() {
+			if history[0].ErrorDetail != test.detail.Error() || history[0].State != test.state {
 				t.Fatalf("persisted error detail = %q", history[0].ErrorDetail)
 			}
 		})
@@ -642,14 +962,27 @@ func TestRunnerFailsClosedOnOversizedOutput(t *testing.T) {
 		{Metadata: map[string]string{"": "value"}},
 		{Metadata: map[string]string{strings.Repeat("k", 129): "value"}},
 		{Metadata: map[string]string{"key": string(make([]byte, 4_097))}},
+		{Metadata: map[string]string{"same key": "first", "same\tkey": "second"}},
+		{Metadata: func() map[string]string {
+			metadata := make(map[string]string, sequencer.DefaultMaxOutputMetadata)
+			for index := range sequencer.DefaultMaxOutputMetadata {
+				metadata[fmt.Sprintf("key-%d", index)] = strings.Repeat("v", 4_096)
+			}
+			return metadata
+		}()},
 	}
 	for index, output := range outputs {
 		spec := validSpec(sequencer.OperationID(fmt.Sprintf("output-%d", index)))
 		spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) { return output, nil })
 		plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
-		runner, _ := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "replica"})
+		store := memory.New()
+		runner, _ := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
 		if _, err := runner.Execute(context.Background()); !errors.Is(err, sequencer.ErrResourceLimit) {
 			t.Errorf("output %d error = %v", index, err)
+		}
+		record, err := store.Snapshot(context.Background(), spec.ID, spec.Version)
+		if err != nil || record.State != sequencer.Failed {
+			t.Errorf("output %d snapshot = %+v, %v; want failed", index, record, err)
 		}
 	}
 
@@ -668,14 +1001,34 @@ func TestRunnerFailsClosedOnOversizedOutput(t *testing.T) {
 		t.Fatalf("sanitized output = %+v", history[0].Output)
 	}
 
+	exactRawSummary := validSpec("exact-raw-summary")
+	exactRawSummary.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		return sequencer.Output{Summary: strings.Repeat(" ", sequencer.DefaultMaxOutputBytes)}, nil
+	})
+	plan, _ = sequencer.CompilePlan([]sequencer.OperationSpec{exactRawSummary}, sequencer.PlanOptions{})
+	exactRawStore := memory.New()
+	runner, _ = sequencer.NewRunner(plan, exactRawStore, sequencer.RunnerOptions{Owner: "replica"})
+	if _, err := runner.Execute(context.Background()); err != nil {
+		t.Fatalf("exact raw summary error = %v", err)
+	}
+	history, _ = exactRawStore.History(context.Background(), exactRawSummary.ID, exactRawSummary.Version, 1)
+	if len(history) != 1 || history[0].State != sequencer.Succeeded || history[0].Output.Summary != "" {
+		t.Fatalf("exact raw summary history = %+v", history)
+	}
+
 	exactMetadata := make(map[string]string, sequencer.DefaultMaxOutputMetadata)
 	exactMetadata[strings.Repeat("k", 128)] = strings.Repeat("v", 4_096)
 	for index := 1; index < sequencer.DefaultMaxOutputMetadata; index++ {
 		exactMetadata[fmt.Sprintf("key-%d", index)] = "value"
 	}
 	exactOutput := validSpec("exact-output")
+	encodedEmptySummary, err := json.Marshal(sequencer.Output{Metadata: exactMetadata})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactSummaryBytes := sequencer.DefaultMaxOutputBytes - len(encodedEmptySummary)
 	exactOutput.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
-		return sequencer.Output{Summary: strings.Repeat("s", sequencer.DefaultMaxOutputBytes), Metadata: exactMetadata}, nil
+		return sequencer.Output{Summary: strings.Repeat("s", exactSummaryBytes), Metadata: exactMetadata}, nil
 	})
 	plan, _ = sequencer.CompilePlan([]sequencer.OperationSpec{exactOutput}, sequencer.PlanOptions{})
 	exactStore := memory.New()
@@ -684,7 +1037,7 @@ func TestRunnerFailsClosedOnOversizedOutput(t *testing.T) {
 		t.Fatalf("exact bounded output error = %v", err)
 	}
 	history, _ = exactStore.History(context.Background(), exactOutput.ID, exactOutput.Version, 1)
-	if len(history[0].Output.Summary) != sequencer.DefaultMaxOutputBytes ||
+	if len(history[0].Output.Summary) != exactSummaryBytes ||
 		len(history[0].Output.Metadata) != sequencer.DefaultMaxOutputMetadata ||
 		len(history[0].Output.Metadata[strings.Repeat("k", 128)]) != 4_096 {
 		t.Fatalf("exact bounded output = %+v", history[0].Output)
@@ -708,8 +1061,25 @@ func TestRunnerConstructorValidation(t *testing.T) {
 	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", LeaseDuration: -time.Second}); !errors.Is(err, sequencer.ErrInvalidRunner) {
 		t.Fatalf("negative lease error = %v", err)
 	}
+	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: strings.Repeat("o", sequencer.DefaultMaxActorBytes+1)}); !errors.Is(err, sequencer.ErrInvalidRunner) {
+		t.Fatalf("owner overflow error = %v", err)
+	}
+	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: strings.Repeat("o", sequencer.DefaultMaxActorBytes)}); err != nil {
+		t.Fatalf("exact owner limit error = %v", err)
+	}
 	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", Channels: []string{"missing"}}); !errors.Is(err, sequencer.ErrInvalidRunner) {
 		t.Fatalf("unknown channel error = %v", err)
+	}
+	for _, channels := range [][]string{{"invalid channel"}, {"", ""}} {
+		if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", Channels: channels}); !errors.Is(err, sequencer.ErrInvalidRunner) {
+			t.Fatalf("channels %v error = %v", channels, err)
+		}
+	}
+	channelSpec := validSpec("channel")
+	channelSpec.Channel = "data"
+	channelPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{channelSpec}, sequencer.PlanOptions{})
+	if _, err := sequencer.NewRunner(channelPlan, store, sequencer.RunnerOptions{Owner: "owner", Channels: []string{"data", "data"}}); !errors.Is(err, sequencer.ErrInvalidRunner) {
+		t.Fatalf("duplicate channels error = %v", err)
 	}
 	observers := make([]sequencer.Observer, 129)
 	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", Observers: observers}); !errors.Is(err, sequencer.ErrInvalidRunner) {
@@ -768,6 +1138,7 @@ func TestRunnerFaultBoundariesAndAllowedFailure(t *testing.T) {
 	plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{validSpec("a")}, sequencer.PlanOptions{})
 	for name, faults := range map[string]sequencertest.Faults{
 		"register": {Register: cause},
+		"snapshot": {Snapshot: cause},
 		"claim":    {ClaimNext: cause},
 		"running":  {MarkRunning: cause},
 		"complete": {Complete: cause},
@@ -828,7 +1199,7 @@ func TestRunnerObserverApprovalConditionAndFailureClassifications(t *testing.T) 
 		{"block", sequencer.Block(errors.New("block")), sequencer.Blocked},
 		{"cancel", context.Canceled, sequencer.Canceled},
 		{"timeout", context.DeadlineExceeded, sequencer.Failed},
-		{"unknown", sequencer.UnknownResult(errors.New("unknown")), sequencer.Failed},
+		{"unknown", sequencer.UnknownResult(errors.New("unknown")), sequencer.Indeterminate},
 	}
 	for _, test := range classifications {
 		t.Run(test.name, func(t *testing.T) {
@@ -867,6 +1238,82 @@ func TestRunnerObserverApprovalConditionAndFailureClassifications(t *testing.T) 
 	}
 }
 
+func TestRunnerPersistsUnknownHandlerOutcomeWithoutAuthorizingReplay(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	spec := validSpec("unknown-handler-outcome")
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		calls++
+		return sequencer.Output{}, sequencer.UnknownResult(errors.New("effect outcome unavailable"))
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := memory.New()
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Execute(context.Background())
+	if !errors.Is(err, sequencer.ErrUnknownResult) || report.Operations[0].State != sequencer.Indeterminate {
+		t.Fatalf("Execute() = %+v, %v", report, err)
+	}
+	record, snapshotErr := store.Snapshot(context.Background(), spec.ID, spec.Version)
+	if snapshotErr != nil || record.State != sequencer.Indeterminate || calls != 1 {
+		t.Fatalf("Snapshot() = %+v, %v; calls = %d", record, snapshotErr, calls)
+	}
+	report, err = runner.Execute(context.Background())
+	if !errors.Is(err, sequencer.ErrUnknownResult) || report.Operations[0].State != sequencer.Indeterminate || calls != 1 {
+		t.Fatalf("replay Execute() = %+v, %v; calls = %d", report, err, calls)
+	}
+}
+
+func TestRunnerMakesDeclaredDeadLettersObservable(t *testing.T) {
+	t.Parallel()
+
+	for _, allowed := range []bool{false, true} {
+		spec := validSpec(sequencer.OperationID(fmt.Sprintf("dead-letter-%t", allowed)))
+		spec.Policy.DeadLetter = true
+		spec.Policy.AllowedFailure = allowed
+		spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+			return sequencer.Output{}, sequencer.Permanent(errors.New("permanent"))
+		})
+		plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+		store := memory.New()
+		runner, _ := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner"})
+		report, err := runner.Execute(context.Background())
+		if !allowed && err == nil {
+			t.Fatal("Execute() error = nil")
+		}
+		if allowed && err != nil {
+			t.Fatalf("Execute() allowed failure error = %v", err)
+		}
+		wantResult := sequencer.RunFailed
+		if allowed {
+			wantResult = sequencer.RunPartial
+		}
+		if report.Result != wantResult || report.Operations[0].State != sequencer.DeadLettered {
+			t.Fatalf("report = %+v, want result %v and dead-lettered state", report, wantResult)
+		}
+		record, _ := store.Snapshot(context.Background(), spec.ID, spec.Version)
+		if record.State != sequencer.DeadLettered || !record.DeadLetter {
+			t.Fatalf("record = %+v", record)
+		}
+		rerun, rerunErr := runner.Execute(context.Background())
+		if !allowed && rerunErr == nil {
+			t.Fatal("rerun error = nil")
+		}
+		if allowed && rerunErr != nil {
+			t.Fatalf("allowed rerun error = %v", rerunErr)
+		}
+		if rerun.Operations[0].State != sequencer.DeadLettered || rerun.Operations[0].Attempts != record.AttemptNumber {
+			t.Fatalf("rerun report = %+v", rerun)
+		}
+	}
+}
+
 type approverStub struct {
 	approval sequencer.Approval
 	err      error
@@ -891,6 +1338,31 @@ func (clock *manualClock) Now() time.Time {
 type transactionManager struct {
 	transaction any
 	calls       int
+}
+
+type resetFailureStore struct {
+	*memory.Store
+	err     error
+	request sequencer.ResetRequest
+}
+
+func (store *resetFailureStore) Reset(_ context.Context, request sequencer.ResetRequest) error {
+	store.request = request
+	return store.err
+}
+
+type zeroBudgetStore struct{ *memory.Store }
+
+func (store *zeroBudgetStore) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
+	claim, err := store.Store.ClaimNext(ctx, request)
+	claim.Budget = sequencer.RetryBudget{}
+	return claim, err
+}
+
+type transactionManagerFunc func(context.Context, func(context.Context, any) error) error
+
+func (function transactionManagerFunc) Within(ctx context.Context, execute func(context.Context, any) error) error {
+	return function(ctx, execute)
 }
 
 type inlineRetryPolicy struct{ attempts int }

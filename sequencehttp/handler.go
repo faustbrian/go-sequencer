@@ -6,9 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/faustbrian/golib/pkg/sequencer"
 )
 
 const maxRequestBytes = 8 << 10
@@ -26,6 +30,8 @@ const (
 	ActionExecute Action = "execute"
 	// ActionReset authorizes an attributable replay reset.
 	ActionReset Action = "reset"
+	// ActionReconcile authorizes resolving an indeterminate attempt.
+	ActionReconcile Action = "reconcile"
 )
 
 // ResetRequest contains attributable administrative replay metadata.
@@ -41,6 +47,7 @@ type Controller interface {
 	Inspect(context.Context, string, uint) (any, error)
 	Execute(context.Context) error
 	Reset(context.Context, ResetRequest) error
+	Reconcile(context.Context, sequencer.ReconcileRequest) error
 }
 
 // Authorizer is implemented by the application security boundary. Authorize
@@ -74,6 +81,8 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		handler.inspect(response, request)
 	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/reset") && strings.HasPrefix(request.URL.Path, "/operations/"):
 		handler.reset(response, request)
+	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/reconcile") && strings.HasPrefix(request.URL.Path, "/operations/"):
+		handler.reconcile(response, request)
 	default:
 		http.NotFound(response, request)
 	}
@@ -92,11 +101,7 @@ func (handler *Handler) execute(response http.ResponseWriter, request *http.Requ
 
 func (handler *Handler) inspect(response http.ResponseWriter, request *http.Request) {
 	id := strings.TrimPrefix(request.URL.Path, "/operations/")
-	if id == "" {
-		http.NotFound(response, request)
-		return
-	}
-	if strings.Contains(id, "/") {
+	if !validOperationID(id) {
 		http.NotFound(response, request)
 		return
 	}
@@ -125,11 +130,7 @@ func (handler *Handler) inspect(response http.ResponseWriter, request *http.Requ
 
 func (handler *Handler) reset(response http.ResponseWriter, request *http.Request) {
 	id := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/operations/"), "/reset")
-	if id == "" {
-		http.NotFound(response, request)
-		return
-	}
-	if strings.Contains(id, "/") {
+	if !validOperationID(id) {
 		http.NotFound(response, request)
 		return
 	}
@@ -141,7 +142,9 @@ func (handler *Handler) reset(response http.ResponseWriter, request *http.Reques
 	var reset ResetRequest
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&reset) != nil || reset.Version == 0 || reset.Actor == "" || reset.Reason == "" {
+	if decodeSingleJSON(decoder, &reset) != nil || reset.Version == 0 ||
+		reset.Actor == "" || len(reset.Actor) > sequencer.DefaultMaxActorBytes ||
+		reset.Reason == "" || len(reset.Reason) > sequencer.DefaultMaxReasonBytes {
 		writeError(response, http.StatusBadRequest)
 		return
 	}
@@ -158,9 +161,91 @@ func (handler *Handler) reset(response http.ResponseWriter, request *http.Reques
 	response.WriteHeader(http.StatusAccepted)
 }
 
+type reconcileRequest struct {
+	Version    uint   `json:"version"`
+	Attempt    uint   `json:"attempt"`
+	Fencing    uint64 `json:"fencing"`
+	Resolution string `json:"resolution"`
+	Actor      string `json:"actor"`
+	Reason     string `json:"reason"`
+}
+
+func (handler *Handler) reconcile(response http.ResponseWriter, request *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/operations/"), "/reconcile")
+	if !validOperationID(id) {
+		http.NotFound(response, request)
+		return
+	}
+	principal, ok := handler.authorized(response, request, ActionReconcile, id)
+	if !ok {
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxRequestBytes)
+	var body reconcileRequest
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if decodeSingleJSON(decoder, &body) != nil || body.Version == 0 || body.Attempt == 0 || body.Fencing == 0 ||
+		body.Actor == "" || len(body.Actor) > sequencer.DefaultMaxActorBytes ||
+		body.Reason == "" || len(body.Reason) > sequencer.DefaultMaxReasonBytes {
+		writeError(response, http.StatusBadRequest)
+		return
+	}
+	resolution, ok := reconcileResolution(body.Resolution)
+	if !ok {
+		writeError(response, http.StatusBadRequest)
+		return
+	}
+	if body.Actor != principal {
+		writeError(response, http.StatusForbidden)
+		return
+	}
+	reconcile := sequencer.ReconcileRequest{
+		OperationID: sequencer.OperationID(id),
+		Version:     body.Version,
+		Attempt:     body.Attempt,
+		Fencing:     body.Fencing,
+		Resolution:  resolution,
+		Actor:       principal,
+		Reason:      body.Reason,
+		At:          time.Now().UTC(),
+	}
+	if err := handler.controller.Reconcile(request.Context(), reconcile); err != nil {
+		writeError(response, http.StatusConflict)
+		return
+	}
+	response.WriteHeader(http.StatusAccepted)
+}
+
+func validOperationID(id string) bool {
+	return !strings.Contains(id, "/") && sequencer.OperationID(id).Valid()
+}
+
+func decodeSingleJSON(decoder *json.Decoder, target any) error {
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ErrInvalidHandler
+	}
+	return nil
+}
+
+func reconcileResolution(value string) (sequencer.ReconcileResolution, bool) {
+	switch value {
+	case "succeeded":
+		return sequencer.ReconcileSucceeded, true
+	case "retry":
+		return sequencer.ReconcileRetry, true
+	case "failed":
+		return sequencer.ReconcileFailed, true
+	default:
+		return 0, false
+	}
+}
+
 func (handler *Handler) authorized(response http.ResponseWriter, request *http.Request, action Action, id string) (string, bool) {
 	principal, err := handler.authorizer.Authorize(request.Context(), action, id)
-	if err != nil || principal == "" {
+	if err != nil || principal == "" || len(principal) > sequencer.DefaultMaxActorBytes {
 		writeError(response, http.StatusForbidden)
 		return "", false
 	}

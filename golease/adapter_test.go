@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	sequencer "github.com/faustbrian/golib/pkg/sequencer"
 	"github.com/faustbrian/golib/pkg/sequencer/golease"
 )
 
@@ -31,6 +32,9 @@ func TestAdapterBoundsDetachedReleaseAfterCallerCancellation(t *testing.T) {
 	}
 	if !errors.Is(err, execution) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("joined error = %v", err)
+	}
+	if !errors.Is(err, sequencer.ErrUnknownResult) {
+		t.Fatalf("joined error = %v, want ErrUnknownResult", err)
 	}
 }
 
@@ -94,12 +98,18 @@ func TestAdapterValidationAndFailurePaths(t *testing.T) {
 		if err := adapter.WithClaim(context.Background(), "key", time.Second, func(context.Context, golease.Ownership) error { return nil }); !errors.Is(err, golease.ErrInvalidAdapter) {
 			t.Fatalf("invalid handle %+v error = %v", handle, err)
 		}
+		if handle != nil && !handle.(*handleStub).released {
+			t.Fatalf("invalid acquired handle %+v was not released", handle)
+		}
 	}
 	execution, release := errors.New("execution"), errors.New("release")
 	adapter, _ = golease.New(acquirerStub{handle: &handleStub{owner: "owner", fencing: 1, releaseErr: release}})
 	err := adapter.WithClaim(context.Background(), "key", time.Second, func(context.Context, golease.Ownership) error { return execution })
 	if !errors.Is(err, execution) || !errors.Is(err, release) {
 		t.Fatalf("joined error = %v", err)
+	}
+	if !errors.Is(err, sequencer.ErrUnknownResult) {
+		t.Fatalf("joined error = %v, want ErrUnknownResult", err)
 	}
 }
 

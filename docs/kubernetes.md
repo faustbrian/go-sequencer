@@ -9,9 +9,10 @@ contention but do not change the concurrency bound inside each pod.
 
 Kubernetes ownership is not exactly-once execution. A pod can lose its lease
 after an external effect commits but before ledger completion commits. Recovery
-records that attempt as retryable with an unknown result. The next owner gets a
-higher fencing token and must reconcile or use an idempotency key before
-repeating an ambiguous effect.
+records that attempt as indeterminate and leaves it unclaimable by default. An
+exact reconciliation decision or an explicitly declared idempotent-replay
+policy is required before a next owner gets a higher fencing token. Stale
+completion remains rejected.
 
 ## Probes and startup
 
@@ -53,11 +54,18 @@ Treat cancellation of `Fleet.Run` as SIGTERM. The owned order is:
 6. after `ShutdownWait`, stop remaining renewals and return
    `ErrShutdownTimeout` in the `failed` state.
 
+Registration, recovery, claim, cancellation-detached `MarkRunning`, and final
+completion calls are limited by `ShutdownWait`. Each renewal is limited by
+the earlier of `ShutdownWait` and the remaining lease window, so a stalled
+renewal fails the fleet and cancels the attempt before an unbounded call can
+silently outlive ownership.
+
 `CancellationDrainOnly` handlers do not receive SIGTERM cancellation. If such
 a handler exceeds the shutdown bound, Go cannot stop its goroutine or prove an
 external effect stopped. The pod must be terminated. The lease is not released
-as a claim of safety; it expires, recovery records an unknown result, and any
-later completion from the stale fencing token is rejected after takeover.
+as a claim of safety; it expires, recovery records an indeterminate result, and
+any later completion from the stale fencing token is rejected after an
+authorized takeover.
 
 Set `terminationGracePeriodSeconds` longer than `ShutdownWait` plus probe and
 runtime overhead. Scale-down should send SIGTERM and wait for drain. An abrupt
@@ -73,8 +81,10 @@ or reconciliation.
 
 During PostgreSQL failover, runners fail closed if recovery, claim, renewal, or
 completion cannot be confirmed. An ambiguous commit is not retried as though it
-failed. After recovery, a runner records expired attempts as unknown before
-takeover.
+failed. After recovery, a runner records expired attempts as indeterminate.
+Default policy stops there; an operator must reconcile the exact attempt and
+fencing token unless the registered policy explicitly declares durable
+idempotency.
 
 Queue acknowledgement is separate from ledger completion. A lost
 acknowledgement may redeliver the same message; the worker validates ID,
@@ -84,8 +94,8 @@ loop or bypasses the shared execution budget.
 
 ## Operational recovery
 
-For every unknown attempt, inspect ledger history, audit fencing, the external
-system's idempotency record, and application evidence. Then let the
-higher-fenced owner reconcile and continue, perform an attributable reset, or
-block the operation. Never infer success from lease release, pod deletion,
-queue acknowledgement, or Kubernetes job completion alone.
+For every indeterminate attempt, inspect ledger history, audit fencing, the
+external system's idempotency record, and application evidence. Resolve that
+exact attempt and fencing token as succeeded, failed, or eligible for retry.
+Generic reset cannot resolve it. Never infer success from lease release, pod
+deletion, queue acknowledgement, or Kubernetes job completion alone.

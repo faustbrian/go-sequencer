@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	sequencer "github.com/faustbrian/golib/pkg/sequencer"
 	"github.com/faustbrian/golib/pkg/sequencer/goidempotency"
 )
 
@@ -39,6 +40,9 @@ func TestAdapterBoundsDetachedCleanupAfterCallerCancellation(t *testing.T) {
 			}
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("cleanup error = %v, want deadline exceeded", err)
+			}
+			if !errors.Is(err, sequencer.ErrUnknownResult) {
+				t.Fatalf("cleanup error = %v, want ErrUnknownResult", err)
 			}
 			if test.execution != nil && !errors.Is(err, test.execution) {
 				t.Fatalf("cleanup error = %v, want joined execution error", err)
@@ -106,14 +110,29 @@ func TestAdapterFailureAndValidationPaths(t *testing.T) {
 	}); err != nil || called {
 		t.Fatalf("unacquired key error = %v, called = %t", err, called)
 	}
+	called = false
+	adapter, _ = goidempotency.New(&gateStub{execute: true, nilToken: true})
+	if err := adapter.Do(context.Background(), "key", func(context.Context) error {
+		called = true
+		return nil
+	}); !errors.Is(err, goidempotency.ErrInvalidAdapter) || called {
+		t.Fatalf("nil token error = %v, called = %t", err, called)
+	}
 	execution, failure := errors.New("execution"), errors.New("record failure")
+	adapter, _ = goidempotency.New(&gateStub{execute: true})
+	if err := adapter.Do(context.Background(), "key", func(context.Context) error { return execution }); !errors.Is(err, execution) {
+		t.Fatalf("recorded execution error = %v", err)
+	}
 	adapter, _ = goidempotency.New(&gateStub{execute: true, failErr: failure})
 	err := adapter.Do(context.Background(), "key", func(context.Context) error { return execution })
 	if !errors.Is(err, execution) || !errors.Is(err, failure) {
 		t.Fatalf("execution error = %v", err)
 	}
+	if !errors.Is(err, sequencer.ErrUnknownResult) {
+		t.Fatalf("execution error = %v, want ErrUnknownResult", err)
+	}
 	adapter, _ = goidempotency.New(&gateStub{execute: true, completeErr: cause})
-	if err := adapter.Do(context.Background(), "key", func(context.Context) error { return nil }); !errors.Is(err, cause) {
+	if err := adapter.Do(context.Background(), "key", func(context.Context) error { return nil }); !errors.Is(err, cause) || !errors.Is(err, sequencer.ErrUnknownResult) {
 		t.Fatalf("complete error = %v", err)
 	}
 }
@@ -125,9 +144,13 @@ type gateStub struct {
 	beginErr            error
 	failErr             error
 	completeErr         error
+	nilToken            bool
 }
 
 func (gate *gateStub) Begin(context.Context, string) (goidempotency.Token, bool, error) {
+	if gate.nilToken {
+		return nil, gate.execute, gate.beginErr
+	}
 	return "token", gate.execute, gate.beginErr
 }
 func (gate *gateStub) Complete(ctx context.Context, _ goidempotency.Token) error {

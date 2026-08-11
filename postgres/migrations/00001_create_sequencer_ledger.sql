@@ -63,8 +63,3 @@ CREATE INDEX sequencer_audit_lookup_idx
 
 -- Claim implementations select candidates FOR UPDATE SKIP LOCKED before
 -- incrementing the fencing token in the same transaction.
-
--- +goose Down
-DROP TABLE sequencer_audit_events;
-DROP TABLE sequencer_attempts;
-DROP TABLE sequencer_operations;

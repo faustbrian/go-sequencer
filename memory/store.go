@@ -3,6 +3,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -50,24 +51,41 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 	defer store.mu.Unlock()
 	normalized := make(map[key]sequencer.Registration, len(registrations))
 	for _, registration := range registrations {
-		if registration.ID == "" || registration.Version == 0 || registration.Checksum == "" {
+		if !registration.ID.Valid() || registration.Version == 0 || registration.Checksum == "" ||
+			(registration.Channel != "" && !sequencer.OperationID(registration.Channel).Valid()) ||
+			registration.UnknownOutcome > sequencer.UnknownOutcomeReplayIdempotent {
 			return sequencer.ErrInvalidOperation
+		}
+		if len(registration.Checksum) > sequencer.DefaultMaxChecksumBytes {
+			return sequencer.ErrResourceLimit
 		}
 		if len(registration.Dependencies) > 0 {
 			return sequencer.ErrUnpinnedDependency
 		}
+		if len(registration.DependencyRefs) > sequencer.DefaultMaxDependencies {
+			return sequencer.ErrResourceLimit
+		}
 		registration.DependencyRefs = slices.Clone(registration.DependencyRefs)
+		registration.Compensates = cloneDependencyRef(registration.Compensates)
 		slices.SortFunc(registration.DependencyRefs, compareDependencyRefs)
 		for index, dependency := range registration.DependencyRefs {
-			if dependency.ID == "" || dependency.ID == registration.ID || dependency.Version == 0 || dependency.Checksum == "" ||
+			if len(dependency.Checksum) > sequencer.DefaultMaxChecksumBytes {
+				return sequencer.ErrResourceLimit
+			}
+			if !dependency.ID.Valid() || dependency.ID == registration.ID || dependency.Version == 0 || dependency.Checksum == "" ||
 				(index > 0 && dependency.ID == registration.DependencyRefs[index-1].ID) {
 				return sequencer.ErrInvalidOperation
 			}
 		}
+		if registration.Compensates != nil && !slices.Contains(registration.DependencyRefs, *registration.Compensates) {
+			return sequencer.ErrInvalidOperation
+		}
 		registration.Dependencies = slices.Clone(registration.Dependencies)
 		identifier := key{registration.ID, registration.Version}
 		if pending, exists := normalized[identifier]; exists {
-			if pending.Checksum != registration.Checksum || pending.Channel != registration.Channel || !slices.Equal(pending.DependencyRefs, registration.DependencyRefs) {
+			if pending.Checksum != registration.Checksum || pending.Channel != registration.Channel ||
+				!slices.Equal(pending.DependencyRefs, registration.DependencyRefs) || !equalDependencyRef(pending.Compensates, registration.Compensates) ||
+				pending.UnknownOutcome != registration.UnknownOutcome || pending.DeadLetter != registration.DeadLetter {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
 			}
 			continue
@@ -76,7 +94,9 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 			if current.record.Checksum != registration.Checksum {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrChecksumDrift, registration.ID, registration.Version)
 			}
-			if current.record.Channel != registration.Channel || !slices.Equal(current.record.DependencyRefs, registration.DependencyRefs) {
+			if current.record.Channel != registration.Channel || !slices.Equal(current.record.DependencyRefs, registration.DependencyRefs) ||
+				!equalDependencyRef(current.record.Compensates, registration.Compensates) || current.record.UnknownOutcome != registration.UnknownOutcome ||
+				current.record.DeadLetter != registration.DeadLetter {
 				return fmt.Errorf("%w: %s version %d", sequencer.ErrDefinitionDrift, registration.ID, registration.Version)
 			}
 			continue
@@ -95,13 +115,38 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 	return nil
 }
 
+func equalDependencyRef(left, right *sequencer.DependencyRef) bool {
+	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
+}
+
+func cloneDependencyRef(reference *sequencer.DependencyRef) *sequencer.DependencyRef {
+	if reference == nil {
+		return nil
+	}
+	cloned := *reference
+	return &cloned
+}
+
+func ownershipValid(ownership sequencer.Ownership) bool {
+	return ownership.OperationID.Valid() &&
+		len(ownership.Owner) <= sequencer.DefaultMaxActorBytes
+}
+
 // ClaimNext atomically claims the first dependency-ready operation.
 func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
 	if err := ctx.Err(); err != nil {
 		return sequencer.Claim{}, err
 	}
-	if request.Owner == "" || request.LeaseDuration <= 0 || request.Now.IsZero() {
+	if request.Owner == "" || len(request.Owner) > sequencer.DefaultMaxActorBytes || request.LeaseDuration <= 0 || request.Now.IsZero() ||
+		(len(request.Candidates) == 0 && len(request.OperationIDs) == 0) {
 		return sequencer.Claim{}, sequencer.ErrInvalidOperation
+	}
+	selectedCount := len(request.Candidates)
+	if selectedCount == 0 {
+		selectedCount = len(request.OperationIDs)
+	}
+	if selectedCount > sequencer.DefaultMaxOperations {
+		return sequencer.Claim{}, sequencer.ErrResourceLimit
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -110,6 +155,17 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		candidates = make([]sequencer.ClaimCandidate, len(request.OperationIDs))
 		for index, id := range request.OperationIDs {
 			candidates[index] = sequencer.ClaimCandidate{ID: id}
+		}
+	}
+	for _, candidate := range candidates {
+		if !candidate.ID.Valid() {
+			return sequencer.Claim{}, sequencer.ErrInvalidOperation
+		}
+		if len(candidate.Checksum) > sequencer.DefaultMaxChecksumBytes {
+			return sequencer.Claim{}, sequencer.ErrResourceLimit
+		}
+		if candidate.Channel != "" && !sequencer.OperationID(candidate.Channel).Valid() {
+			return sequencer.Claim{}, sequencer.ErrInvalidOperation
 		}
 	}
 	for _, candidate := range candidates {
@@ -126,6 +182,10 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		if current == nil || current.record.EligibleAt.After(request.Now) || !store.dependenciesSucceeded(current.record.DependencyRefs) {
 			continue
 		}
+		if (current.record.State == sequencer.Eligible || current.record.State == sequencer.Retryable || current.record.State == sequencer.Deferred) &&
+			(current.record.AttemptNumber == ^uint(0) || current.record.RunAttempt == ^uint(0) || current.record.Fencing == ^uint64(0)) {
+			return sequencer.Claim{}, sequencer.ErrResourceLimit
+		}
 		if current.record.State == sequencer.Retryable || current.record.State == sequencer.Deferred {
 			from := current.record.State
 			current.record.State = sequencer.Eligible
@@ -139,6 +199,7 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		current.record.Owner = request.Owner
 		current.record.Fencing++
 		current.record.AttemptNumber++
+		current.record.RunAttempt++
 		current.record.LeaseExpiresAt = request.Now.Add(request.LeaseDuration)
 		current.record.UpdatedAt = request.Now
 		attempt := sequencer.Attempt{
@@ -148,7 +209,10 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		}
 		current.attempts = append(current.attempts, sequencer.AttemptRecord{Attempt: attempt, State: sequencer.Claimed})
 		current.appendAudit(from, sequencer.Claimed, request.Now, request.Owner, "claimed")
-		return sequencer.Claim{Attempt: attempt, Until: current.record.LeaseExpiresAt}, nil
+		return sequencer.Claim{
+			Attempt: attempt, Until: current.record.LeaseExpiresAt,
+			Budget: sequencer.RetryBudget{Attempt: current.record.RunAttempt, Exceptions: current.record.RetryExceptions},
+		}, nil
 	}
 	return sequencer.Claim{}, sequencer.ErrNoEligibleOperation
 }
@@ -158,11 +222,17 @@ func (store *Store) MarkRunning(ctx context.Context, ownership sequencer.Ownersh
 	if err := ctx.Err(); err != nil {
 		return sequencer.AttemptRecord{}, err
 	}
+	if !ownershipValid(ownership) {
+		return sequencer.AttemptRecord{}, sequencer.ErrInvalidOperation
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	current, err := store.owned(ownership)
 	if err != nil {
 		return sequencer.AttemptRecord{}, err
+	}
+	if now.IsZero() || now.Before(current.record.UpdatedAt) {
+		return sequencer.AttemptRecord{}, sequencer.ErrInvalidOperation
 	}
 	if !now.Before(current.record.LeaseExpiresAt) {
 		return sequencer.AttemptRecord{}, sequencer.ErrStaleOwner
@@ -183,6 +253,9 @@ func (store *Store) MarkRunning(ctx context.Context, ownership sequencer.Ownersh
 func (store *Store) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
 	if err := ctx.Err(); err != nil {
 		return time.Time{}, err
+	}
+	if !ownershipValid(ownership) {
+		return time.Time{}, sequencer.ErrInvalidOperation
 	}
 	if duration <= 0 || now.IsZero() {
 		return time.Time{}, sequencer.ErrInvalidLease
@@ -212,17 +285,44 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if !ownershipValid(completion.Ownership) {
+		return sequencer.ErrInvalidOperation
+	}
+	if completion.State == sequencer.Retryable && !completion.RetryException ||
+		completion.RetryException && completion.State != sequencer.Retryable && completion.State != sequencer.Failed && completion.State != sequencer.DeadLettered {
+		return sequencer.ErrInvalidOperation
+	}
+	actor, reason := completion.Actor, completion.Reason
+	if actor == "" {
+		actor = completion.Owner
+	}
+	if reason == "" {
+		reason = "completed"
+	}
+	if len(actor) > sequencer.DefaultMaxActorBytes || len(reason) > sequencer.DefaultMaxReasonBytes {
+		return sequencer.ErrResourceLimit
+	}
+	output, err := json.Marshal(completion.Output)
+	if err != nil || len(output) > sequencer.DefaultMaxOutputBytes {
+		return sequencer.ErrResourceLimit
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	current, err := store.owned(completion.Ownership)
 	if err != nil {
 		return err
 	}
+	if err := sequencer.ValidateTransition(current.record.State, completion.State); err != nil {
+		return err
+	}
+	if completion.At.IsZero() || completion.At.Before(current.record.UpdatedAt) {
+		return sequencer.ErrInvalidOperation
+	}
 	if !completion.At.Before(current.record.LeaseExpiresAt) {
 		return sequencer.ErrStaleOwner
 	}
-	if err := sequencer.ValidateTransition(current.record.State, completion.State); err != nil {
-		return err
+	if completion.RetryException && current.record.RetryExceptions == ^uint(0) {
+		return sequencer.ErrResourceLimit
 	}
 	from := current.record.State
 	current.record.State = completion.State
@@ -236,43 +336,45 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	attempt.CompletedAt = completion.At
 	attempt.ErrorDetail = sequencer.SanitizePersistenceText(completion.ErrorDetail, sequencer.DefaultMaxErrorBytes)
 	attempt.Output = cloneOutput(completion.Output)
-	actor, reason := completion.Actor, completion.Reason
-	if actor == "" {
-		actor = completion.Owner
-	}
-	if reason == "" {
-		reason = "completed"
+	if completion.RetryException {
+		current.record.RetryExceptions++
 	}
 	current.appendAudit(from, completion.State, completion.At, actor, reason)
 	current.record.Owner = ""
 	return nil
 }
 
-// RecoverExpired releases expired leases for explicit re-execution.
+// RecoverExpired records expired attempts as indeterminate. Only an explicit
+// idempotent-replay policy makes the operation eligible again automatically.
 func (store *Store) RecoverExpired(ctx context.Context, now time.Time) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+	if now.IsZero() {
+		return 0, sequencer.ErrInvalidOperation
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	recovered := 0
 	for _, current := range store.entries {
-		if (current.record.State != sequencer.Claimed && current.record.State != sequencer.Running) || current.record.LeaseExpiresAt.After(now) {
-			continue
+		if (current.record.State == sequencer.Claimed || current.record.State == sequencer.Running) && !current.record.LeaseExpiresAt.After(now) {
+			from := current.record.State
+			attempt := &current.attempts[len(current.attempts)-1]
+			attempt.State = sequencer.Indeterminate
+			attempt.CompletedAt = now
+			attempt.ErrorDetail = sequencer.ErrUnknownResult.Error()
+			current.record.State = sequencer.Indeterminate
+			current.record.LeaseExpiresAt = time.Time{}
+			current.record.UpdatedAt = now
+			current.appendAudit(from, sequencer.Indeterminate, now, "system", "lease expired; outcome unknown")
+			if current.record.UnknownOutcome == sequencer.UnknownOutcomeReplayIdempotent {
+				current.record.State = sequencer.Eligible
+				current.record.EligibleAt = now
+				current.appendAudit(sequencer.Indeterminate, sequencer.Eligible, now, "system", "idempotent replay authorized")
+			}
+			current.record.Owner = ""
+			recovered++
 		}
-		from := current.record.State
-		attempt := &current.attempts[len(current.attempts)-1]
-		attempt.State = sequencer.Retryable
-		attempt.CompletedAt = now
-		attempt.ErrorDetail = sequencer.ErrUnknownResult.Error()
-		current.record.State = sequencer.Eligible
-		current.record.LeaseExpiresAt = time.Time{}
-		current.record.EligibleAt = now
-		current.record.UpdatedAt = now
-		current.appendAudit(from, sequencer.Retryable, now, "system", "lease expired; outcome unknown")
-		current.appendAudit(sequencer.Retryable, sequencer.Eligible, now, "system", "recovered")
-		current.record.Owner = ""
-		recovered++
 	}
 	return recovered, nil
 }
@@ -336,7 +438,9 @@ func (store *Store) Reset(ctx context.Context, request sequencer.ResetRequest) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if request.Actor == "" || request.Reason == "" || request.At.IsZero() {
+	if !request.OperationID.Valid() || request.Version == 0 || request.At.IsZero() ||
+		request.Actor == "" || len(request.Actor) > sequencer.DefaultMaxActorBytes ||
+		request.Reason == "" || len(request.Reason) > sequencer.DefaultMaxReasonBytes {
 		return sequencer.ErrResetForbidden
 	}
 	store.mu.Lock()
@@ -345,7 +449,11 @@ func (store *Store) Reset(ctx context.Context, request sequencer.ResetRequest) e
 	if current == nil {
 		return sequencer.ErrNotFound
 	}
-	if current.record.State != sequencer.Succeeded && current.record.State != sequencer.Failed && current.record.State != sequencer.Blocked {
+	if current.record.State != sequencer.Succeeded && current.record.State != sequencer.Failed && current.record.State != sequencer.Blocked &&
+		current.record.State != sequencer.Canceled && current.record.State != sequencer.DeadLettered {
+		return sequencer.ErrResetForbidden
+	}
+	if request.At.Before(current.record.UpdatedAt) {
 		return sequencer.ErrResetForbidden
 	}
 	from := current.record.State
@@ -353,7 +461,55 @@ func (store *Store) Reset(ctx context.Context, request sequencer.ResetRequest) e
 	current.record.EligibleAt = request.At
 	current.record.UpdatedAt = request.At
 	current.record.Owner = ""
+	current.record.RunAttempt = 0
+	current.record.RetryExceptions = 0
 	current.appendAudit(from, sequencer.Eligible, request.At, request.Actor, request.Reason)
+	return nil
+}
+
+// ResolveUnknown atomically applies one attributed decision to an
+// indeterminate operation. A second or stale decision fails closed.
+func (store *Store) ResolveUnknown(ctx context.Context, request sequencer.ReconcileRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !request.OperationID.Valid() || request.Version == 0 || request.Attempt == 0 || request.Fencing == 0 || request.At.IsZero() ||
+		request.Actor == "" || len(request.Actor) > sequencer.DefaultMaxActorBytes ||
+		request.Reason == "" || len(request.Reason) > sequencer.DefaultMaxReasonBytes ||
+		request.Resolution < sequencer.ReconcileSucceeded || request.Resolution > sequencer.ReconcileFailed {
+		return sequencer.ErrReconcileForbidden
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	current := store.entries[key{request.OperationID, request.Version}]
+	if current == nil {
+		return sequencer.ErrNotFound
+	}
+	if current.record.State != sequencer.Indeterminate || current.record.AttemptNumber != request.Attempt || current.record.Fencing != request.Fencing {
+		return sequencer.ErrReconcileForbidden
+	}
+	if request.At.Before(current.record.UpdatedAt) {
+		return sequencer.ErrReconcileForbidden
+	}
+	to := sequencer.Eligible
+	switch request.Resolution {
+	case sequencer.ReconcileSucceeded:
+		to = sequencer.Succeeded
+	case sequencer.ReconcileRetry:
+		to = sequencer.Eligible
+	case sequencer.ReconcileFailed:
+		to = sequencer.Failed
+		if current.record.DeadLetter {
+			to = sequencer.DeadLettered
+		}
+	}
+	from := current.record.State
+	current.record.State = to
+	current.record.UpdatedAt = request.At
+	if to == sequencer.Eligible {
+		current.record.EligibleAt = request.At
+	}
+	current.appendAudit(from, to, request.At, request.Actor, request.Reason)
 	return nil
 }
 
@@ -398,6 +554,7 @@ func (current *entry) appendAudit(from, to sequencer.State, at time.Time, actor,
 
 func cloneRecord(record sequencer.Record) sequencer.Record {
 	record.DependencyRefs = slices.Clone(record.DependencyRefs)
+	record.Compensates = cloneDependencyRef(record.Compensates)
 	record.Dependencies = slices.Clone(record.Dependencies)
 	return record
 }
@@ -432,4 +589,5 @@ func cloneOutput(output sequencer.Output) sequencer.Output {
 
 var _ sequencer.Store = (*Store)(nil)
 var _ sequencer.LeaseStore = (*Store)(nil)
+var _ sequencer.ReconciliationStore = (*Store)(nil)
 var _ = errors.Is

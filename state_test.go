@@ -15,17 +15,21 @@ func TestStateTransitionsAreExplicit(t *testing.T) {
 		sequencer.Running, sequencer.Succeeded, sequencer.Skipped,
 		sequencer.Failed, sequencer.Retryable, sequencer.Deferred,
 		sequencer.Canceled, sequencer.RolledBack, sequencer.Blocked,
+		sequencer.Indeterminate, sequencer.DeadLettered,
 	}
 	allowed := map[sequencer.State]map[sequencer.State]bool{
-		sequencer.Pending:   {sequencer.Eligible: true, sequencer.Deferred: true, sequencer.Skipped: true, sequencer.Blocked: true, sequencer.Canceled: true},
-		sequencer.Eligible:  {sequencer.Claimed: true, sequencer.Deferred: true, sequencer.Skipped: true, sequencer.Blocked: true, sequencer.Canceled: true},
-		sequencer.Claimed:   {sequencer.Running: true, sequencer.Eligible: true, sequencer.Retryable: true, sequencer.Failed: true, sequencer.Canceled: true},
-		sequencer.Running:   {sequencer.Succeeded: true, sequencer.Skipped: true, sequencer.Failed: true, sequencer.Retryable: true, sequencer.Deferred: true, sequencer.Blocked: true, sequencer.Canceled: true},
-		sequencer.Retryable: {sequencer.Eligible: true, sequencer.Failed: true, sequencer.Canceled: true},
-		sequencer.Deferred:  {sequencer.Eligible: true, sequencer.Canceled: true},
-		sequencer.Failed:    {sequencer.Eligible: true, sequencer.RolledBack: true},
-		sequencer.Succeeded: {sequencer.Eligible: true, sequencer.RolledBack: true},
-		sequencer.Blocked:   {sequencer.Eligible: true, sequencer.Canceled: true},
+		sequencer.Pending:       {sequencer.Eligible: true, sequencer.Deferred: true, sequencer.Skipped: true, sequencer.Blocked: true, sequencer.Canceled: true},
+		sequencer.Eligible:      {sequencer.Claimed: true, sequencer.Deferred: true, sequencer.Skipped: true, sequencer.Blocked: true, sequencer.Canceled: true},
+		sequencer.Claimed:       {sequencer.Running: true, sequencer.Indeterminate: true, sequencer.Canceled: true},
+		sequencer.Running:       {sequencer.Succeeded: true, sequencer.Skipped: true, sequencer.Failed: true, sequencer.DeadLettered: true, sequencer.Retryable: true, sequencer.Deferred: true, sequencer.Blocked: true, sequencer.Canceled: true, sequencer.Indeterminate: true},
+		sequencer.Retryable:     {sequencer.Eligible: true, sequencer.Failed: true, sequencer.DeadLettered: true, sequencer.Canceled: true},
+		sequencer.Deferred:      {sequencer.Eligible: true, sequencer.Canceled: true},
+		sequencer.Failed:        {sequencer.Eligible: true},
+		sequencer.Succeeded:     {sequencer.Eligible: true},
+		sequencer.Blocked:       {sequencer.Eligible: true, sequencer.Canceled: true},
+		sequencer.Canceled:      {sequencer.Eligible: true},
+		sequencer.Indeterminate: {sequencer.Eligible: true, sequencer.Succeeded: true, sequencer.Failed: true, sequencer.DeadLettered: true},
+		sequencer.DeadLettered:  {sequencer.Eligible: true},
 	}
 	for _, from := range states {
 		for _, to := range states {
@@ -57,6 +61,7 @@ func TestEveryStateHasStableText(t *testing.T) {
 		sequencer.Running, sequencer.Succeeded, sequencer.Skipped,
 		sequencer.Failed, sequencer.Retryable, sequencer.Deferred,
 		sequencer.Canceled, sequencer.RolledBack, sequencer.Blocked,
+		sequencer.Indeterminate, sequencer.DeadLettered,
 	}
 	for _, state := range states {
 		if state.String() == "unknown" {

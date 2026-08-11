@@ -38,6 +38,8 @@ var (
 	ErrNotFound = errors.New("sequencer: operation not found")
 	// ErrResetForbidden reports an invalid or unattributed replay request.
 	ErrResetForbidden = errors.New("sequencer: reset forbidden")
+	// ErrReconcileForbidden reports an invalid or stale unknown-outcome decision.
+	ErrReconcileForbidden = errors.New("sequencer: reconciliation forbidden")
 	// ErrInvalidLease reports a non-positive or regressing lease renewal.
 	ErrInvalidLease = errors.New("sequencer: invalid lease renewal")
 )
@@ -84,6 +86,9 @@ type Registration struct {
 	Checksum       string
 	Channel        string
 	DependencyRefs []DependencyRef
+	Compensates    *DependencyRef
+	UnknownOutcome UnknownOutcomePolicy
+	DeadLetter     bool
 	// Dependencies is retained for source compatibility and rejected when non-empty.
 	Dependencies []OperationID
 }
@@ -91,13 +96,15 @@ type Registration struct {
 // Record is the current-state projection for one operation version.
 type Record struct {
 	Registration
-	State          State
-	AttemptNumber  uint
-	Owner          string
-	Fencing        uint64
-	LeaseExpiresAt time.Time
-	EligibleAt     time.Time
-	UpdatedAt      time.Time
+	State           State
+	AttemptNumber   uint
+	RunAttempt      uint
+	RetryExceptions uint
+	Owner           string
+	Fencing         uint64
+	LeaseExpiresAt  time.Time
+	EligibleAt      time.Time
+	UpdatedAt       time.Time
 }
 
 // AttemptRecord is the durable summary of one execution attempt.
@@ -155,6 +162,15 @@ type Ownership struct {
 type Claim struct {
 	Attempt Attempt
 	Until   time.Time
+	Budget  RetryBudget
+}
+
+// RetryBudget is the durable policy usage for the current replay epoch.
+// Attempt includes the newly claimed attempt; Exceptions includes only prior
+// explicitly retryable failures.
+type RetryBudget struct {
+	Attempt    uint
+	Exceptions uint
 }
 
 // Ownership returns the transition proof for this claim.
@@ -165,19 +181,65 @@ func (claim Claim) Ownership() Ownership {
 // Completion records a terminal or retryable attempt outcome.
 type Completion struct {
 	Ownership
-	State       State
-	At          time.Time
-	EligibleAt  time.Time
-	ErrorDetail string
-	Output      Output
-	Actor       string
-	Reason      string
+	State          State
+	At             time.Time
+	EligibleAt     time.Time
+	ErrorDetail    string
+	Output         Output
+	Actor          string
+	Reason         string
+	RetryException bool
 }
 
 // ResetRequest is an explicit, attributable replay authorization.
 type ResetRequest struct {
 	OperationID OperationID
 	Version     uint
+	Actor       string
+	Reason      string
+	At          time.Time
+}
+
+const (
+	// DefaultMaxActorBytes bounds an administrative principal in one request.
+	DefaultMaxActorBytes = 255
+	// DefaultMaxReasonBytes bounds an administrative explanation in one request.
+	DefaultMaxReasonBytes = 4 << 10
+)
+
+// ReconcileResolution is an explicit decision about an indeterminate attempt.
+type ReconcileResolution uint8
+
+const (
+	// ReconcileSucceeded records that the exact indeterminate attempt succeeded.
+	ReconcileSucceeded ReconcileResolution = iota + 1
+	// ReconcileRetry authorizes another attempt without resetting its retry epoch.
+	ReconcileRetry
+	// ReconcileFailed records that the exact indeterminate attempt failed.
+	ReconcileFailed
+)
+
+// String returns stable administrative decision text.
+func (resolution ReconcileResolution) String() string {
+	switch resolution {
+	case ReconcileSucceeded:
+		return "succeeded"
+	case ReconcileRetry:
+		return "retry"
+	case ReconcileFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+// ReconcileRequest is an attributed resolution of one unknown durable result.
+type ReconcileRequest struct {
+	OperationID OperationID
+	Version     uint
+	Attempt     uint
+	Fencing     uint64
+	Resolution  ReconcileResolution
 	Actor       string
 	Reason      string
 	At          time.Time
@@ -202,6 +264,12 @@ type Store interface {
 type LeaseStore interface {
 	Store
 	RenewLease(context.Context, Ownership, time.Time, time.Duration) (time.Time, error)
+}
+
+// ReconciliationStore extends Store with explicit unknown-outcome resolution.
+type ReconciliationStore interface {
+	Store
+	ResolveUnknown(context.Context, ReconcileRequest) error
 }
 
 // SanitizePersistenceText removes control characters and applies a byte bound.

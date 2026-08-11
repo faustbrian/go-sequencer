@@ -168,19 +168,23 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 		registrations = append(registrations, Registration{
 			ID: operation.spec.ID, Version: operation.spec.Version,
 			Checksum: operation.spec.Checksum, Channel: operation.spec.Channel, DependencyRefs: slices.Clone(operation.spec.DependencyRefs),
+			Compensates: operation.spec.Compensates, UnknownOutcome: operation.spec.Policy.UnknownOutcome, DeadLetter: operation.spec.Policy.DeadLetter,
 		})
 		if runsChannel(fleet.options.Channels, operation.spec.Channel) {
 			candidates = append(candidates, ClaimCandidate{ID: operation.spec.ID, Version: operation.spec.Version, Checksum: operation.spec.Checksum, Channel: operation.spec.Channel})
 		}
 	}
-	if err := fleet.store.Register(ctx, registrations, fleet.options.Clock.Now()); err != nil {
-		if isRunCancellation(ctx, err) {
+	registerContext, cancelRegister := context.WithTimeout(ctx, fleet.options.ShutdownWait)
+	registerErr := fleet.store.Register(registerContext, registrations, fleet.options.Clock.Now())
+	cancelRegister()
+	if registerErr != nil {
+		if isRunCancellation(ctx, registerErr) {
 			fleet.setState(RunnerDraining)
 			fleet.setState(RunnerStopped)
 			return nil
 		}
 		fleet.setState(RunnerFailed)
-		return err
+		return registerErr
 	}
 
 	workContext, cancelWork := context.WithCancel(context.Background())
@@ -222,8 +226,11 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 		}
 
 		now := fleet.options.Clock.Now()
-		if _, err := fleet.store.RecoverExpired(ctx, now); err != nil {
-			if isRunCancellation(ctx, err) {
+		recoveryContext, cancelRecovery := context.WithTimeout(ctx, fleet.options.ShutdownWait)
+		_, recoveryErr := fleet.store.RecoverExpired(recoveryContext, now)
+		cancelRecovery()
+		if recoveryErr != nil {
+			if isRunCancellation(ctx, recoveryErr) {
 				fleet.setState(RunnerDraining)
 				cancelWork()
 				err := fleet.waitForDrain(results, active)
@@ -234,12 +241,14 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 			_ = fleet.waitForDrain(results, active)
 			cancelRenewals()
 			fleet.setState(RunnerFailed)
-			return err
+			return recoveryErr
 		}
-		claim, err := fleet.store.ClaimNext(ctx, ClaimRequest{
+		claimContext, cancelClaim := context.WithTimeout(ctx, fleet.options.ShutdownWait)
+		claim, err := fleet.store.ClaimNext(claimContext, ClaimRequest{
 			Candidates: candidates, Owner: fleet.options.Owner, Now: now,
 			LeaseDuration: fleet.options.LeaseDuration,
 		})
+		cancelClaim()
 		if err != nil {
 			if isRunCancellation(ctx, err) {
 				fleet.setState(RunnerDraining)
@@ -270,6 +279,13 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 			cancelRenewals()
 			fleet.setState(RunnerFailed)
 			return err
+		}
+		if claim.Budget.Attempt == 0 {
+			cancelWork()
+			_ = fleet.waitForDrain(results, active)
+			cancelRenewals()
+			fleet.setState(RunnerFailed)
+			return ErrInvalidOperation
 		}
 		operation, ok := fleet.operations[claim.Attempt.OperationID]
 		if !ok {
@@ -358,15 +374,18 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 	renewalStopped := make(chan struct{})
 	renewalError := make(chan error, 1)
 	fleet.renewals.Go(func() {
-		fleet.renewLease(renewContext, renewalReady, cancelAttempt, claim.Ownership(), claim.Attempt.Number, renewalStopped, renewalError)
+		fleet.renewLease(renewContext, renewalReady, cancelAttempt, claim.Ownership(), claim.Attempt.Number, claim.Until, renewalStopped, renewalError)
 	})
 	fleet.renewalStarts.Done()
 
 	now := fleet.options.Clock.Now()
-	if _, err := fleet.store.MarkRunning(context.WithoutCancel(ctx), claim.Ownership(), now); err != nil {
+	markContext, cancelMark := context.WithTimeout(context.WithoutCancel(ctx), fleet.options.ShutdownWait)
+	_, markErr := fleet.store.MarkRunning(markContext, claim.Ownership(), now)
+	cancelMark()
+	if markErr != nil {
 		stopRenewal()
 		<-renewalStopped
-		return fmt.Errorf("sequencer: mark accepted attempt running: %w", err)
+		return fmt.Errorf("sequencer: mark accepted attempt running: %w", markErr)
 	}
 	close(renewalReady)
 	fleet.observe(Event{Type: EventRunning, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Running, At: now})
@@ -380,10 +399,15 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 		return fmt.Errorf("sequencer: renew accepted attempt lease: %w", err)
 	default:
 	}
-	state := classifyState(executionErr, operation.spec.Policy.RetryMode, claim.Attempt.Number, operation.spec.Policy.MaxAttempts, claim.Attempt.Number, operation.spec.Policy.MaxExceptions)
+	retryException := operation.spec.Policy.RetryMode == DurableRetries && errors.Is(executionErr, ErrRetryable)
+	exceptions := claim.Budget.Exceptions
+	if retryException {
+		exceptions = nextAttempt(exceptions)
+	}
+	state := classifyState(executionErr, operation.spec.Policy, claim.Budget.Attempt, exceptions)
 	completion := Completion{
 		Ownership: claim.Ownership(), State: state, At: fleet.options.Clock.Now(),
-		Output: output, Actor: actor, Reason: reason,
+		Output: output, Actor: actor, Reason: reason, RetryException: retryException,
 	}
 	if executionErr != nil {
 		completion.ErrorDetail = persistentErrorDetail(executionErr)
@@ -400,7 +424,7 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 	return nil
 }
 
-func (fleet *Fleet) renewLease(ctx context.Context, ready <-chan struct{}, cancelAttempt context.CancelFunc, ownership Ownership, attempt uint, stopped chan<- struct{}, failed chan<- error) {
+func (fleet *Fleet) renewLease(ctx context.Context, ready <-chan struct{}, cancelAttempt context.CancelFunc, ownership Ownership, attempt uint, until time.Time, stopped chan<- struct{}, failed chan<- error) {
 	defer close(stopped)
 	select {
 	case <-ctx.Done():
@@ -415,7 +439,16 @@ func (fleet *Fleet) renewLease(ctx context.Context, ready <-chan struct{}, cance
 			return
 		case <-ticker.C:
 			now := fleet.options.Clock.Now()
-			_, err := fleet.store.RenewLease(ctx, ownership, now, fleet.options.LeaseDuration)
+			remaining := until.Sub(now)
+			if remaining <= 0 {
+				failed <- ErrStaleOwner
+				cancelAttempt()
+				return
+			}
+			renewalTimeout := min(fleet.options.ShutdownWait, remaining)
+			renewContext, cancel := context.WithTimeout(ctx, renewalTimeout)
+			renewedUntil, err := fleet.store.RenewLease(renewContext, ownership, now, fleet.options.LeaseDuration)
+			cancel()
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -424,6 +457,12 @@ func (fleet *Fleet) renewLease(ctx context.Context, ready <-chan struct{}, cance
 				cancelAttempt()
 				return
 			}
+			if !renewedUntil.After(now) {
+				failed <- ErrInvalidLease
+				cancelAttempt()
+				return
+			}
+			until = renewedUntil
 			fleet.observe(Event{Type: EventHeartbeat, Operation: ownership.OperationID, Attempt: attempt, State: Running, At: now})
 		}
 	}

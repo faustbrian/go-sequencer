@@ -32,10 +32,15 @@ const (
 	Deferred
 	// Canceled was administratively stopped.
 	Canceled
-	// RolledBack had its effects compensated.
+	// RolledBack is retained for reading legacy ledgers. New compensation is a
+	// separate operation and no current transition enters this state.
 	RolledBack
 	// Blocked cannot proceed until an explicit reset.
 	Blocked
+	// Indeterminate has an expired attempt whose durable effect is unknown.
+	Indeterminate
+	// DeadLettered is a terminal operator-visible failure under dead-letter policy.
+	DeadLettered
 )
 
 var stateNames = map[State]string{
@@ -43,6 +48,7 @@ var stateNames = map[State]string{
 	Running: "running", Succeeded: "succeeded", Skipped: "skipped",
 	Failed: "failed", Retryable: "retryable", Deferred: "deferred",
 	Canceled: "canceled", RolledBack: "rolled_back", Blocked: "blocked",
+	Indeterminate: "indeterminate", DeadLettered: "dead_lettered",
 }
 
 // String returns stable ledger text.
@@ -54,15 +60,18 @@ func (state State) String() string {
 }
 
 var transitions = map[State]map[State]struct{}{
-	Pending:   set(Eligible, Deferred, Skipped, Blocked, Canceled),
-	Eligible:  set(Claimed, Deferred, Skipped, Blocked, Canceled),
-	Claimed:   set(Running, Eligible, Retryable, Failed, Canceled),
-	Running:   set(Succeeded, Skipped, Failed, Retryable, Deferred, Blocked, Canceled),
-	Retryable: set(Eligible, Failed, Canceled),
-	Deferred:  set(Eligible, Canceled),
-	Failed:    set(Eligible, RolledBack),
-	Succeeded: set(Eligible, RolledBack),
-	Blocked:   set(Eligible, Canceled),
+	Pending:       set(Eligible, Deferred, Skipped, Blocked, Canceled),
+	Eligible:      set(Claimed, Deferred, Skipped, Blocked, Canceled),
+	Claimed:       set(Running, Indeterminate, Canceled),
+	Running:       set(Succeeded, Skipped, Failed, DeadLettered, Retryable, Deferred, Blocked, Canceled, Indeterminate),
+	Retryable:     set(Eligible, Failed, DeadLettered, Canceled),
+	Deferred:      set(Eligible, Canceled),
+	Failed:        set(Eligible),
+	Succeeded:     set(Eligible),
+	Blocked:       set(Eligible, Canceled),
+	Canceled:      set(Eligible),
+	Indeterminate: set(Eligible, Succeeded, Failed, DeadLettered),
+	DeadLettered:  set(Eligible),
 }
 
 func set(states ...State) map[State]struct{} {

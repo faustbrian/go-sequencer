@@ -38,7 +38,7 @@ func New(destination Destination) (*Adapter, error) {
 
 // Defer schedules one operation version at an absolute instant.
 func (adapter *Adapter) Defer(ctx context.Context, id sequencer.OperationID, version uint, eligibleAt time.Time) error {
-	if id == "" || version == 0 || eligibleAt.IsZero() {
+	if !id.Valid() || version == 0 || eligibleAt.IsZero() {
 		return ErrInvalidAdapter
 	}
 	return adapter.destination.Schedule(ctx, Request{OperationID: id, Version: version, EligibleAt: eligibleAt})

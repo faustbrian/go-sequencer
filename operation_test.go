@@ -85,21 +85,74 @@ func TestNewOperationRequiresAndFreezesExactDependencyReferences(t *testing.T) {
 	}
 }
 
+func TestNewOperationModelsCompensationAsSeparateExactDependency(t *testing.T) {
+	t.Parallel()
+
+	forward := validSpec("forward")
+	compensation := validSpec("compensation")
+	reference := referenceTo(forward)
+	compensation.DependencyRefs = []sequencer.DependencyRef{reference}
+	compensation.Compensates = &reference
+
+	operation, err := sequencer.NewOperation(compensation)
+	if err != nil {
+		t.Fatalf("NewOperation(compensation) error = %v", err)
+	}
+	snapshot := operation.Spec()
+	if snapshot.Compensates == nil || *snapshot.Compensates != reference {
+		t.Fatalf("Compensates = %+v, want %+v", snapshot.Compensates, reference)
+	}
+	snapshot.Compensates.Checksum = "mutated"
+	if operation.Spec().Compensates.Checksum != reference.Checksum {
+		t.Fatal("compensation reference is mutable")
+	}
+
+	for _, candidate := range []sequencer.OperationSpec{
+		func() sequencer.OperationSpec {
+			value := validSpec("missing")
+			value.Compensates = &reference
+			return value
+		}(),
+		func() sequencer.OperationSpec {
+			value := compensation
+			self := referenceTo(value)
+			value.Compensates = &self
+			return value
+		}(),
+	} {
+		if _, err := sequencer.NewOperation(candidate); !errors.Is(err, sequencer.ErrInvalidOperation) {
+			t.Fatalf("NewOperation(invalid compensation) error = %v", err)
+		}
+	}
+}
+
 func TestNewOperationAcceptsEveryBoundedModeAndExactCollectionLimit(t *testing.T) {
 	t.Parallel()
 
 	spec := validSpec("repeatable.bounds")
+	spec.Checksum = strings.Repeat("c", 512)
+	spec.Description = strings.Repeat("d", 4<<10)
 	spec.Policy.Mode = sequencer.Repeatable
+	spec.Policy.Cancellation = sequencer.CancellationDrainOnly
+	spec.Policy.RetryMode = sequencer.InlineRetries
+	spec.Policy.UnknownOutcome = sequencer.UnknownOutcomeReplayIdempotent
 	spec.Policy.MaxAttempts = 1
 	spec.Policy.MaxExceptions = 2
 	spec.DependencyRefs = make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies)
 	for index := range spec.DependencyRefs {
 		spec.DependencyRefs[index] = sequencer.DependencyRef{ID: sequencer.OperationID(fmt.Sprintf("dependency-%d", index)), Version: 1, Checksum: "sum"}
 	}
+	spec.DependencyRefs[0].Checksum = strings.Repeat("c", 512)
 	spec.Tags = make([]string, sequencer.DefaultMaxTags)
 	for index := range spec.Tags {
 		spec.Tags[index] = fmt.Sprintf("tag-%d", index)
 	}
+	spec.Tags[0] = strings.Repeat("t", 255)
+	spec.Environments = make([]string, 64)
+	for index := range spec.Environments {
+		spec.Environments[index] = fmt.Sprintf("environment-%d", index)
+	}
+	spec.Environments[0] = strings.Repeat("e", 255)
 	if _, err := sequencer.NewOperation(spec); err != nil {
 		t.Fatalf("NewOperation() exact limits error = %v", err)
 	}
@@ -114,6 +167,12 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 	}{
 		{name: "missing id", spec: validSpec("")},
 		{name: "missing checksum", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Checksum = ""; return s }()},
+		{name: "checksum overflow", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Checksum = strings.Repeat("c", 513); return s }()},
+		{name: "description overflow", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.Description = strings.Repeat("d", (4<<10)+1)
+			return s
+		}()},
 		{name: "invalid channel", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Channel = "Deploy Queue"; return s }()},
 		{name: "channel overflow", spec: func() sequencer.OperationSpec {
 			s := validSpec("a")
@@ -142,6 +201,19 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 			s.Tags = make([]string, sequencer.DefaultMaxTags+1)
 			return s
 		}()},
+		{name: "empty tag", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Tags = []string{""}; return s }()},
+		{name: "tag overflow", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.Tags = []string{strings.Repeat("t", 256)}
+			return s
+		}()},
+		{name: "too many environments", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Environments = make([]string, 65); return s }()},
+		{name: "empty environment", spec: func() sequencer.OperationSpec { s := validSpec("a"); s.Environments = []string{""}; return s }()},
+		{name: "environment overflow", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.Environments = []string{strings.Repeat("e", 256)}
+			return s
+		}()},
 		{name: "self dependency", spec: func() sequencer.OperationSpec {
 			s := validSpec("a")
 			s.DependencyRefs = []sequencer.DependencyRef{{ID: "a", Version: 1, Checksum: "sum"}}
@@ -155,6 +227,11 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 		{name: "dependency without checksum", spec: func() sequencer.OperationSpec {
 			s := validSpec("a")
 			s.DependencyRefs = []sequencer.DependencyRef{{ID: "b", Version: 1}}
+			return s
+		}()},
+		{name: "dependency checksum overflow", spec: func() sequencer.OperationSpec {
+			s := validSpec("a")
+			s.DependencyRefs = []sequencer.DependencyRef{{ID: "b", Version: 1, Checksum: strings.Repeat("c", 513)}}
 			return s
 		}()},
 		{name: "duplicate dependency", spec: func() sequencer.OperationSpec {

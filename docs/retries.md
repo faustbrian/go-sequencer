@@ -9,6 +9,14 @@ Attempt and exception maxima are independent; either may be lower, and the
 lower exhausted bound stops execution. Inline mode gives its adapter that same
 lower bound as one shared callback budget.
 
+Durable stores persist a replay-epoch attempt counter and an independent typed
+retry-exception counter. `Claim.Budget` carries both values atomically with the
+fenced claim, so fleet failover cannot reset or conflate them. An attributed
+reset starts a fresh replay epoch; ordinary retry eligibility and unknown-result
+reconciliation retain the current counters. A `Retryable` completion must mark
+the typed retry exception, while permanent and unknown outcomes cannot spend
+that exception budget implicitly.
+
 Select exactly one retry owner. `DurableRetries` is the default and creates a
 new fenced ledger attempt for each typed `sequencer.Retry`. It does not expose
 an inline execution budget. `InlineRetries` creates one durable attempt and
@@ -25,10 +33,14 @@ may the queue acknowledge. A lease or bulkhead release reports resource
 ownership release, not that an uncooperative side effect stopped.
 
 Compensation is a separate operation with its own finite policy and budget.
-Dead-letter policy starts no automatic worker: exhausted work remains one
-terminal operator-visible record, bounded to an audited reset or separately
-declared operation.
+`OperationSpec.Compensates` identifies the exact forward `DependencyRef`; that
+reference must also be an explicit dependency and never rewrites the forward
+operation's state.
 
-Dead-letter policy means exhausted work remains terminal and operator-visible;
-it is never deleted or replayed automatically. An audited reset or new version
-is required to try it again.
+With `Policy.DeadLetter`, a permanent, timed-out, or exhausted terminal failure
+is stored and reported as `dead_lettered` instead of `failed`. Dead-letter
+policy starts no automatic worker: the record remains terminal,
+operator-visible, never deleted, and never replayed automatically. An
+attributed reset or new version is required to try it again. `AllowedFailure`
+may make the aggregate report partial, but it does not hide or change the
+durable dead-letter state.

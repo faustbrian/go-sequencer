@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	sequencer "github.com/faustbrian/golib/pkg/sequencer"
 )
 
 const (
@@ -56,12 +58,21 @@ func (adapter *Adapter) Do(ctx context.Context, key string, execute func(context
 	if err != nil || !shouldExecute {
 		return err
 	}
+	if token == nil {
+		return ErrInvalidAdapter
+	}
 	if err = execute(ctx); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.cleanupTimeout)
 		defer cancel()
-		return errors.Join(err, adapter.gate.Fail(cleanupCtx, token, err))
+		if cleanupErr := adapter.gate.Fail(cleanupCtx, token, err); cleanupErr != nil {
+			return sequencer.UnknownResult(errors.Join(err, cleanupErr))
+		}
+		return err
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.cleanupTimeout)
 	defer cancel()
-	return adapter.gate.Complete(cleanupCtx, token)
+	if err := adapter.gate.Complete(cleanupCtx, token); err != nil {
+		return sequencer.UnknownResult(err)
+	}
+	return nil
 }

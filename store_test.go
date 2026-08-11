@@ -38,6 +38,25 @@ func TestClassifiedErrorsPreserveCause(t *testing.T) {
 	}
 }
 
+func TestReconcileResolutionTextIsStable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		resolution sequencer.ReconcileResolution
+		want       string
+	}{
+		{sequencer.ReconcileSucceeded, "succeeded"},
+		{sequencer.ReconcileRetry, "retry"},
+		{sequencer.ReconcileFailed, "failed"},
+		{0, "unknown"},
+	}
+	for _, test := range tests {
+		if got := test.resolution.String(); got != test.want {
+			t.Errorf("ReconcileResolution(%d).String() = %q", test.resolution, got)
+		}
+	}
+}
+
 func TestSanitizePersistenceTextBoundsAndNormalizes(t *testing.T) {
 	t.Parallel()
 

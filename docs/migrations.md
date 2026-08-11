@@ -46,6 +46,32 @@ Use these deployment phases:
    `dependency_refs` mandatory only after the proof passes. Stop the deployment
    on any unresolved or drifting row; do not mark it resolved manually.
 
+## Compensation-generation fence
+
+Apply migrations `00004` through `00007` in order. Migration `00004` creates a
+concurrent temporary index used to prove the legacy ledger has no claimed,
+running, retryable, deferred, indeterminate, or replay-eligible compensation.
+Resolve every row reported by that proof before retrying migration `00005`;
+the migration deliberately fails rather than binding an in-flight legacy
+handler to whichever forward generation happens to be current.
+
+Migration `00005` installs the forward-row counter and database transition
+fence. Completed historical compensation remains deliberately unbound and
+cannot be reset; use a new compensation version rather than infer which past
+forward generation it targeted. Its short write lock closes the final
+old-binary claim race after the indexed proof without an unbounded historical
+backfill. Migration `00006` validates the staged counter and generation-binding
+constraints without holding the write-blocking migration lock.
+Migration `00007` removes the temporary index concurrently. Do not deploy
+binaries whose reset query uses `active_compensations` before `00005` commits,
+and do not bypass a failed legacy-compensation proof during rollout or rollback.
+
+Migration `00004` first drops the temporary index with `IF EXISTS`, then
+rebuilds it concurrently. This intentionally makes retry recover an invalid
+same-named index left by an interrupted concurrent build. Migration `00007`
+also uses `IF EXISTS`, so a completed concurrent drop can be replayed safely
+when migration bookkeeping was interrupted.
+
 For data-before-schema changes, keep old and new application versions compatible
 with the expanded schema, execute the pinned backfill, verify its ledger and
 data result, and only then apply the incompatible constraint, drop, rename, or

@@ -19,26 +19,29 @@ type key struct {
 }
 
 type entry struct {
-	record   sequencer.Record
-	attempts []sequencer.AttemptRecord
-	audit    []sequencer.AuditEvent
+	record              sequencer.Record
+	compensationFencing uint64
+	attempts            []sequencer.AttemptRecord
+	audit               []sequencer.AuditEvent
 }
 
 // Store is a mutex-serialized reference implementation suitable for tests.
 type Store struct {
-	mu       sync.Mutex
-	entries  map[key]*entry
-	versions map[sequencer.OperationID][]uint
-	leases   leaseQueue
-	leased   map[key]*leasedEntry
+	mu                  sync.Mutex
+	entries             map[key]*entry
+	versions            map[sequencer.OperationID][]uint
+	activeCompensations map[sequencer.DependencyRef]uint
+	leases              leaseQueue
+	leased              map[key]*leasedEntry
 }
 
 // New constructs an empty store without background goroutines.
 func New() *Store {
 	return &Store{
-		entries:  make(map[key]*entry),
-		versions: make(map[sequencer.OperationID][]uint),
-		leased:   make(map[key]*leasedEntry),
+		entries:             make(map[key]*entry),
+		versions:            make(map[sequencer.OperationID][]uint),
+		activeCompensations: make(map[sequencer.DependencyRef]uint),
+		leased:              make(map[key]*leasedEntry),
 	}
 }
 
@@ -130,6 +133,34 @@ func cloneDependencyRef(reference *sequencer.DependencyRef) *sequencer.Dependenc
 	return &cloned
 }
 
+func (store *Store) hasActiveCompensation(reference sequencer.DependencyRef) bool {
+	return store.activeCompensations[reference] > 0
+}
+
+func compensationActive(record sequencer.Record) bool {
+	if record.Compensates == nil {
+		return false
+	}
+	return record.State == sequencer.Claimed || record.State == sequencer.Running ||
+		record.State == sequencer.Retryable || record.State == sequencer.Deferred ||
+		record.State == sequencer.Indeterminate ||
+		record.State == sequencer.Eligible && record.AttemptNumber > 0
+}
+
+func (store *Store) setState(current *entry, state sequencer.State) {
+	wasActive := compensationActive(current.record)
+	current.record.State = state
+	isActive := compensationActive(current.record)
+	if wasActive == isActive || current.record.Compensates == nil {
+		return
+	}
+	if isActive {
+		store.activeCompensations[*current.record.Compensates]++
+		return
+	}
+	store.activeCompensations[*current.record.Compensates]--
+}
+
 func ownershipValid(ownership sequencer.Ownership) bool {
 	return ownership.OperationID.Valid() &&
 		len(ownership.Owner) <= sequencer.DefaultMaxActorBytes
@@ -191,14 +222,19 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		}
 		if current.record.State == sequencer.Retryable || current.record.State == sequencer.Deferred {
 			from := current.record.State
-			current.record.State = sequencer.Eligible
+			store.setState(current, sequencer.Eligible)
 			current.appendAudit(from, sequencer.Eligible, request.Now, "system", "eligibility reached")
 		}
 		if current.record.State != sequencer.Eligible {
 			continue
 		}
+		if current.record.Compensates != nil && current.compensationFencing == 0 {
+			// Dependency readiness above proves this exact forward definition exists.
+			forward := store.entries[key{current.record.Compensates.ID, current.record.Compensates.Version}]
+			current.compensationFencing = forward.record.Fencing
+		}
 		from := current.record.State
-		current.record.State = sequencer.Claimed
+		store.setState(current, sequencer.Claimed)
 		current.record.Owner = request.Owner
 		current.record.Fencing++
 		current.record.AttemptNumber++
@@ -245,7 +281,7 @@ func (store *Store) MarkRunning(ctx context.Context, ownership sequencer.Ownersh
 		return sequencer.AttemptRecord{}, err
 	}
 	from := current.record.State
-	current.record.State = sequencer.Running
+	store.setState(current, sequencer.Running)
 	current.record.UpdatedAt = now
 	attempt := &current.attempts[len(current.attempts)-1]
 	attempt.State = sequencer.Running
@@ -336,7 +372,7 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if completion.RetryException && current.record.RetryExceptions == ^uint(0) {
 		return sequencer.ErrResourceLimit
 	}
-	current.record.State = completion.State
+	store.setState(current, completion.State)
 	current.record.UpdatedAt = completion.At
 	current.record.LeaseExpiresAt = time.Time{}
 	store.clearLease(key{current.record.ID, current.record.Version})
@@ -377,12 +413,12 @@ func (store *Store) RecoverExpired(ctx context.Context, now time.Time) (int, err
 			attempt.State = sequencer.Indeterminate
 			attempt.CompletedAt = now
 			attempt.ErrorDetail = sequencer.ErrUnknownResult.Error()
-			current.record.State = sequencer.Indeterminate
+			store.setState(current, sequencer.Indeterminate)
 			current.record.LeaseExpiresAt = time.Time{}
 			current.record.UpdatedAt = now
 			current.appendAudit(from, sequencer.Indeterminate, now, "system", "lease expired; outcome unknown")
 			if current.record.UnknownOutcome == sequencer.UnknownOutcomeReplayIdempotent {
-				current.record.State = sequencer.Eligible
+				store.setState(current, sequencer.Eligible)
 				current.record.EligibleAt = now
 				current.appendAudit(sequencer.Indeterminate, sequencer.Eligible, now, "system", "idempotent replay authorized")
 			}
@@ -470,8 +506,22 @@ func (store *Store) Reset(ctx context.Context, request sequencer.ResetRequest) e
 	if request.At.Before(current.record.UpdatedAt) {
 		return sequencer.ErrResetForbidden
 	}
+	if current.record.Compensates != nil {
+		// Claiming a compensation proves this exact immutable forward definition
+		// exists and binds a nonzero generation before the compensation can
+		// reach a resettable state.
+		forward := store.entries[key{current.record.Compensates.ID, current.record.Compensates.Version}]
+		if (forward.record.State != sequencer.Succeeded && forward.record.State != sequencer.Skipped) ||
+			current.compensationFencing != forward.record.Fencing {
+			return sequencer.ErrResetForbidden
+		}
+	}
+	forward := sequencer.DependencyRef{ID: current.record.ID, Version: current.record.Version, Checksum: current.record.Checksum}
+	if store.hasActiveCompensation(forward) {
+		return sequencer.ErrResetForbidden
+	}
 	from := current.record.State
-	current.record.State = sequencer.Eligible
+	store.setState(current, sequencer.Eligible)
 	current.record.EligibleAt = request.At
 	current.record.UpdatedAt = request.At
 	current.record.Owner = ""
@@ -518,7 +568,7 @@ func (store *Store) ResolveUnknown(ctx context.Context, request sequencer.Reconc
 		}
 	}
 	from := current.record.State
-	current.record.State = to
+	store.setState(current, to)
 	current.record.UpdatedAt = request.At
 	if to == sequencer.Eligible {
 		current.record.EligibleAt = request.At

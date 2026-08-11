@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Fence forward resets while a compensation is claimed, running, replayable,
+  deferred, or indeterminate. PostgreSQL deployments must apply the staged
+  generation-fence migrations after resolving legacy in-flight compensation.
 - Fail closed when cancellation races an unknown durable result, reject claims
   for a different local generation before handler execution, and add a
   PostgreSQL fence that prevents older binaries from replaying blocked unknown
@@ -16,7 +19,8 @@
 - Preserve ambiguous drain-only timeout outcomes as indeterminate, prevent
   recovered attempts from invoking handlers or reporting a running transition
   beyond `MaxAttempts`, require exact unrounded package coverage, and include
-  real PostgreSQL restart and benchmark evidence in resilience verification.
+  real PostgreSQL restart, synchronous-standby promotion, reconnection, and
+  benchmark evidence in resilience verification.
 - Block expired claimed or running work as `indeterminate` by default;
   automatic replay now requires an explicit idempotent unknown-outcome policy,
   while manual reconciliation is attributed and bound to the exact attempt and
@@ -62,6 +66,9 @@
 
 ### Fixed
 
+- Prevent a compensation accepted for one forward generation from crossing a
+  reset or replay and acting on newer forward ownership, including during
+  mixed-version PostgreSQL claim/reset races.
 - Treat a transaction-manager error after a successful handler callback as an
   unknown commit result so automatic replay cannot duplicate a committed side
   effect whose acknowledgement was lost.

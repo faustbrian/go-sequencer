@@ -104,6 +104,17 @@ Default policy stops there; an operator must reconcile the exact attempt and
 fencing token unless the registered policy explicitly declares durable
 idempotency.
 
+Database topology and acknowledged-write durability remain deployment-owned.
+Use a multi-host connection string with read-write target selection so the pool
+can reject a read-only standby and reconnect after promotion. If acknowledged
+ledger writes must survive primary loss, require synchronous replication at
+least through remote apply; asynchronous replication can lose an acknowledged
+claim, renewal, completion, or audit record and cannot support that guarantee.
+The PostgreSQL integration gate kills a primary after a synchronously applied
+claim, promotes a different physical standby, proves pool reconnection, records
+the expired attempt as indeterminate, rejects stale completion, and verifies a
+reconciled takeover receives a higher fence.
+
 Queue acknowledgement is separate from ledger completion. A lost
 acknowledgement may redeliver the same message; the worker validates ID,
 version, and checksum and delegates ownership to the ledger. Acknowledge only

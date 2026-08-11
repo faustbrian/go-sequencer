@@ -1229,6 +1229,123 @@ func TestStoreResetEnforcesAdministrativeBoundsAndMonotonicTime(t *testing.T) {
 	}
 }
 
+func TestStoreCompensationReplayRequiresCurrentForwardGeneration(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 11, 20, 0, 0, 0, time.UTC)
+	store := memory.New()
+	forward := sequencer.DependencyRef{ID: "generation-forward", Version: 1, Checksum: "sha256:generation-forward"}
+	compensation := sequencer.Registration{
+		ID: "generation-compensation", Version: 1, Checksum: "sha256:generation-compensation",
+		DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
+	}
+	if err := store.Register(ctx, []sequencer.Registration{
+		{ID: forward.ID, Version: forward.Version, Checksum: forward.Checksum}, compensation,
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	complete := func(candidate sequencer.DependencyRef, owner string, at time.Time) {
+		t.Helper()
+		claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+			Candidates: []sequencer.ClaimCandidate{{ID: candidate.ID, Version: candidate.Version, Checksum: candidate.Checksum}},
+			Owner:      owner, Now: at, LeaseDuration: time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = store.MarkRunning(ctx, claim.Ownership(), at); err != nil {
+			t.Fatal(err)
+		}
+		if err = store.Complete(ctx, sequencer.Completion{
+			Ownership: claim.Ownership(), State: sequencer.Succeeded, At: at.Add(time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete(forward, "forward-generation-one", base)
+	complete(sequencer.DependencyRef{ID: compensation.ID, Version: compensation.Version, Checksum: compensation.Checksum},
+		"compensation-generation-one", base.Add(2*time.Second))
+	compensationReset := sequencer.ResetRequest{
+		OperationID: compensation.ID, Version: compensation.Version,
+		Actor: "operator", Reason: "same generation replay", At: base.Add(4 * time.Second),
+	}
+	if err := store.Reset(ctx, compensationReset); err != nil {
+		t.Fatalf("Reset(compensation in same generation) error = %v", err)
+	}
+	complete(sequencer.DependencyRef{ID: compensation.ID, Version: compensation.Version, Checksum: compensation.Checksum},
+		"compensation-generation-one-replay", base.Add(5*time.Second))
+	if err := store.Reset(ctx, sequencer.ResetRequest{
+		OperationID: forward.ID, Version: forward.Version,
+		Actor: "operator", Reason: "advance forward generation", At: base.Add(7 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	compensationReset.At = base.Add(8 * time.Second)
+	if err := store.Reset(ctx, compensationReset); !errors.Is(err, sequencer.ErrResetForbidden) {
+		t.Fatalf("Reset(compensation while forward eligible) error = %v", err)
+	}
+	complete(forward, "forward-generation-two", base.Add(9*time.Second))
+	compensationReset.At = base.Add(11 * time.Second)
+	if err := store.Reset(ctx, compensationReset); !errors.Is(err, sequencer.ErrResetForbidden) {
+		t.Fatalf("Reset(compensation after forward advanced) error = %v", err)
+	}
+}
+
+func TestStoreCompensationReplayAcceptsSkippedForwardGeneration(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	base := time.Date(2026, 8, 11, 21, 0, 0, 0, time.UTC)
+	store := memory.New()
+	forward := sequencer.DependencyRef{ID: "skipped-generation-forward", Version: 1, Checksum: "sha256:skipped-generation-forward"}
+	compensation := sequencer.Registration{
+		ID: "skipped-generation-compensation", Version: 1, Checksum: "sha256:skipped-generation-compensation",
+		DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
+	}
+	if err := store.Register(ctx, []sequencer.Registration{
+		{ID: forward.ID, Version: forward.Version, Checksum: forward.Checksum}, compensation,
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	forwardClaim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: forward.ID, Version: forward.Version, Checksum: forward.Checksum}},
+		Owner:      "skipped-forward-owner", Now: base, LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.MarkRunning(ctx, forwardClaim.Ownership(), base); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Complete(ctx, sequencer.Completion{
+		Ownership: forwardClaim.Ownership(), State: sequencer.Skipped, At: base.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	compensationClaim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: compensation.ID, Version: compensation.Version, Checksum: compensation.Checksum}},
+		Owner:      "skipped-compensation-owner", Now: base.Add(2 * time.Second), LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.MarkRunning(ctx, compensationClaim.Ownership(), base.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Complete(ctx, sequencer.Completion{
+		Ownership: compensationClaim.Ownership(), State: sequencer.Succeeded, At: base.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Reset(ctx, sequencer.ResetRequest{
+		OperationID: compensation.ID, Version: compensation.Version,
+		Actor: "operator", Reason: "replay skipped generation", At: base.Add(4 * time.Second),
+	}); err != nil {
+		t.Fatalf("Reset(compensation after skipped forward) error = %v", err)
+	}
+}
+
 func register(t *testing.T, store *memory.Store, id sequencer.OperationID, checksum string, now time.Time) {
 	t.Helper()
 	if err := store.Register(context.Background(), []sequencer.Registration{{ID: id, Version: 1, Checksum: checksum}}, now); err != nil {

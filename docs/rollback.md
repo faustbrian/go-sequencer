@@ -15,6 +15,15 @@ If a compensation result is unknown, stop automatic progress and reconcile the
 external effect before reset. A new forward version is often safer than trying
 to reconstruct a historical state.
 
+An attributed reset of the forward operation fails while any related
+compensation is claimed, running, retryable, deferred, indeterminate, or
+replay-eligible after an earlier attempt. Complete or reconcile that exact
+compensation generation first. The PostgreSQL ledger enforces the same rule in
+database triggers so an older binary cannot race a compensation claim across a
+newer forward generation. A terminal compensation may be reset only while its
+original forward fencing generation is still terminal; use a new compensation
+version for a later forward generation.
+
 `rolled_back` remains readable for legacy ledgers, but no current state
 transition enters it. New compensation must be represented by a separate
 operation.

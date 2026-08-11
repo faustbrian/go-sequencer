@@ -24,6 +24,14 @@ persisted counters.
 Attempts and audit events are bounded inspection surfaces.
 `ReconciliationStore` optionally adds `ResolveUnknown`; each request is bounded,
 attributed, and bound to the exact operation version, attempt, and fencing token.
+Every `Store` implementation must reject a forward `Reset` while an exact
+related compensation is claimed, running, retryable, deferred, indeterminate,
+or eligible after an earlier attempt. This fence must serialize with
+compensation claim so a new forward generation cannot cross active reverse
+ownership. Once a compensation first claims, later retries and attributed
+resets remain bound to that exact forward fencing generation; advancing the
+forward operation makes replay of the older compensation return
+`ErrResetForbidden`.
 
 `Runner.Execute` registers a complete plan and runs it synchronously. Reports
 retain every terminal operation, including allowed failures. Handlers receive

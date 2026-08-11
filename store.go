@@ -253,6 +253,9 @@ type ReconcileRequest struct {
 }
 
 // Store is the transactional durability boundary used by runners and workers.
+// Reset must reject a new forward generation while any operation compensating
+// that exact ID, version, and checksum has active or replayable ownership. A
+// compensation replay must remain bound to the same forward fencing generation.
 type Store interface {
 	Register(context.Context, []Registration, time.Time) error
 	ClaimNext(context.Context, ClaimRequest) (Claim, error)
@@ -263,6 +266,9 @@ type Store interface {
 	Snapshot(context.Context, OperationID, uint) (Record, error)
 	History(context.Context, OperationID, uint, int) ([]AttemptRecord, error)
 	Audit(context.Context, OperationID, uint, int) ([]AuditEvent, error)
+	// Reset returns ErrResetForbidden while a related compensation is claimed,
+	// running, retryable, deferred, indeterminate, or eligible after an attempt,
+	// and when a compensation replay no longer matches its forward generation.
 	Reset(context.Context, ResetRequest) error
 }
 

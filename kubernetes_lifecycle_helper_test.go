@@ -155,6 +155,17 @@ func applyKubernetesMigrations(t *testing.T, ctx context.Context, pool *pgxpool.
 			t.Fatal(readErr)
 		}
 		up := strings.Split(string(migration), "-- +goose Down")[0]
+		if strings.Contains(up, "-- +goose NO TRANSACTION") {
+			for statement := range strings.SplitSeq(up, ";") {
+				if strings.TrimSpace(statement) == "" {
+					continue
+				}
+				if _, execErr := pool.Exec(ctx, statement); execErr != nil {
+					t.Fatalf("apply %s: %v", entry, execErr)
+				}
+			}
+			continue
+		}
 		if _, execErr := pool.Exec(ctx, up); execErr != nil {
 			t.Fatalf("apply %s: %v", entry, execErr)
 		}

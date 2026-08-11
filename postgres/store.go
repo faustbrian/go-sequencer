@@ -865,9 +865,17 @@ func (store *Store) Reset(ctx context.Context, request sequencer.ResetRequest) e
 	var at time.Time
 	err = tx.QueryRow(ctx, `
 WITH current AS MATERIALIZED (
-    SELECT state FROM sequencer_operations
-    WHERE operation_id = $1 AND version = $2
-	      AND state IN ('succeeded', 'failed', 'blocked', 'canceled', 'dead_lettered')
+    SELECT operation.state FROM sequencer_operations operation
+    WHERE operation.operation_id = $1 AND operation.version = $2
+	      AND operation.state IN ('succeeded', 'failed', 'blocked', 'canceled', 'dead_lettered')
+          AND operation.active_compensations = 0
+          AND (operation.compensates IS NULL OR operation.attempt_number = 0 OR EXISTS (
+              SELECT 1 FROM sequencer_operations forward
+              WHERE forward.operation_id = operation.compensates->>'id'
+                AND forward.version = (operation.compensates->>'version')::bigint
+                AND forward.checksum = operation.compensates->>'checksum'
+                AND forward.fencing_token = operation.compensation_fencing_token
+          ))
     FOR UPDATE
 ), updated AS (
     UPDATE sequencer_operations operation SET

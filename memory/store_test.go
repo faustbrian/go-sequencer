@@ -907,6 +907,43 @@ func TestStoreRecoverySkipsUnexpiredAndTerminalEntries(t *testing.T) {
 	}
 }
 
+func TestStoreRecoversExpiredWorkInDeterministicBoundedBatches(t *testing.T) {
+	t.Parallel()
+
+	const recoveryBatchSize = 32
+	ctx := context.Background()
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	store := memory.New()
+	for index := recoveryBatchSize; index >= 0; index-- {
+		id := sequencer.OperationID(fmt.Sprintf("recovery-%02d", index))
+		register(t, store, id, "sha256:"+string(id), now)
+		if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+			OperationIDs: []sequencer.OperationID{id}, Owner: "owner", Now: now,
+			LeaseDuration: time.Second,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if recovered, err := store.RecoverExpired(ctx, now.Add(time.Minute)); err != nil || recovered != recoveryBatchSize {
+		t.Fatalf("first RecoverExpired() = %d, %v; want %d", recovered, err, recoveryBatchSize)
+	}
+	for index := 0; index < recoveryBatchSize; index++ {
+		id := sequencer.OperationID(fmt.Sprintf("recovery-%02d", index))
+		record, err := store.Snapshot(ctx, id, 1)
+		if err != nil || record.State != sequencer.Indeterminate {
+			t.Fatalf("Snapshot(%s) = %+v, %v; want indeterminate", id, record, err)
+		}
+	}
+	remaining, err := store.Snapshot(ctx, "recovery-32", 1)
+	if err != nil || remaining.State != sequencer.Claimed {
+		t.Fatalf("remaining Snapshot() = %+v, %v; want claimed", remaining, err)
+	}
+	if recovered, err := store.RecoverExpired(ctx, now.Add(time.Minute)); err != nil || recovered != 1 {
+		t.Fatalf("second RecoverExpired() = %d, %v; want 1", recovered, err)
+	}
+}
+
 func TestStoreBlocksUnknownExpiredWorkUntilExplicitResolution(t *testing.T) {
 	t.Parallel()
 

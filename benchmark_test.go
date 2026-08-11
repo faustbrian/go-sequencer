@@ -214,7 +214,8 @@ func BenchmarkMemoryRecovery(benchmark *testing.B) {
 	}
 
 	benchmark.ReportAllocs()
-	benchmark.ReportMetric(benchmarkRecoverySize, "expired/op")
+	benchmark.ReportMetric(benchmarkRecoverySize, "expired-backlog/op")
+	benchmark.ReportMetric(sequencer.DefaultRecoveryBatchSize, "recovered/op")
 	for benchmark.Loop() {
 		benchmark.StopTimer()
 		store := memory.New()
@@ -230,7 +231,7 @@ func BenchmarkMemoryRecovery(benchmark *testing.B) {
 		}
 		benchmark.StartTimer()
 		recovered, err := store.RecoverExpired(context.Background(), benchmarkNow.Add(time.Nanosecond))
-		if err != nil || recovered != benchmarkRecoverySize {
+		if err != nil || recovered != sequencer.DefaultRecoveryBatchSize {
 			benchmark.Fatalf("RecoverExpired() = %d, %v", recovered, err)
 		}
 	}

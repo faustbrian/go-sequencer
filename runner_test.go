@@ -197,6 +197,32 @@ func TestRunnerRejectsClaimWithoutDurableBudget(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsClaimForDifferentGenerationBeforeHandlerExecution(t *testing.T) {
+	t.Parallel()
+
+	invocations := 0
+	spec := validSpec("claim-generation")
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		invocations++
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &substitutedGenerationStore{Store: memory.New(), operationID: spec.ID, version: spec.Version + 1}
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background()); !errors.Is(err, sequencer.ErrDefinitionDrift) {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if invocations != 0 {
+		t.Fatalf("handler invocations = %d, want 0", invocations)
+	}
+}
+
 func TestRunnerRetriesTypedFailuresWithinBudget(t *testing.T) {
 	t.Parallel()
 
@@ -1524,6 +1550,31 @@ func (store *resetFailureStore) Reset(_ context.Context, request sequencer.Reset
 }
 
 type zeroBudgetStore struct{ *memory.Store }
+
+type substitutedGenerationStore struct {
+	*memory.Store
+	operationID sequencer.OperationID
+	version     uint
+}
+
+func (store *substitutedGenerationStore) ClaimNext(context.Context, sequencer.ClaimRequest) (sequencer.Claim, error) {
+	return sequencer.Claim{Attempt: sequencer.Attempt{
+		OperationID: store.operationID, Version: store.version, Number: 1,
+		Owner: "replica", Fencing: 1,
+	}, Budget: sequencer.RetryBudget{Attempt: 1}}, nil
+}
+
+func (store *substitutedGenerationStore) MarkRunning(_ context.Context, ownership sequencer.Ownership, at time.Time) (sequencer.AttemptRecord, error) {
+	return sequencer.AttemptRecord{
+		Attempt: sequencer.Attempt{
+			OperationID: ownership.OperationID, Version: ownership.Version, Number: 1,
+			Owner: ownership.Owner, Fencing: ownership.Fencing, StartedAt: at,
+		},
+		State: sequencer.Running,
+	}, nil
+}
+
+func (*substitutedGenerationStore) Complete(context.Context, sequencer.Completion) error { return nil }
 
 func (store *zeroBudgetStore) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
 	claim, err := store.Store.ClaimNext(ctx, request)

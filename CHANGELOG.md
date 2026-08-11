@@ -4,6 +4,15 @@
 
 ### Changed
 
+- Fail closed when cancellation races an unknown durable result, reject claims
+  for a different local generation before handler execution, and add a
+  PostgreSQL fence that prevents older binaries from replaying blocked unknown
+  outcomes during rolling updates or rollback.
+- Add executable scale-up, scale-down, suspended-container takeover, lifecycle
+  race, stale-compensation, and shared retry/hedge-budget resilience proofs.
+- Fail readiness immediately when lease ownership is lost even if a handler
+  ignores cancellation, and recover expired leases in deterministic batches
+  that bound PostgreSQL transactions and in-memory critical sections.
 - Preserve ambiguous drain-only timeout outcomes as indeterminate, prevent
   recovered attempts from invoking handlers or reporting a running transition
   beyond `MaxAttempts`, require exact unrounded package coverage, and include

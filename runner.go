@@ -296,6 +296,10 @@ func (runner *Runner) executeOperation(ctx context.Context, operation Operation)
 			result.Err = ErrInvalidOperation
 			return result, result.Err
 		}
+		if claim.Attempt.OperationID != spec.ID || claim.Attempt.Version != spec.Version {
+			result.Err = ErrDefinitionDrift
+			return result, result.Err
+		}
 		result.Attempts = claim.Attempt.Number
 		runner.observe(Event{Type: EventClaimed, Operation: spec.ID, Channel: spec.Channel, Attempt: claim.Attempt.Number, State: Claimed, At: now})
 		if executionErr := attemptBudgetError(claim.Budget, spec.Policy); executionErr != nil {

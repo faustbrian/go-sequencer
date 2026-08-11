@@ -35,7 +35,8 @@ record count:
   the measurement result;
 - one fleet initial poll over 10,000 registrations with a deterministic 10%
   channel selection;
-- recovery of 1,000 simultaneously expired, replay-idempotent leases;
+- one 32-lease recovery batch selected from 1,000 simultaneously expired,
+  replay-idempotent leases;
 - confirmed queue settlement and bounded eight-attempt retry and idempotency
   adapter paths.
 

@@ -30,10 +30,18 @@ restart a healthy pod merely because there is no eligible work.
 - **Scale up:** new pods register before readiness, then contend through
   `SKIP LOCKED`. Per-pod `MaxConcurrency` and database capacity set the safe
   replica count.
+- **Scale down:** terminating pods close admission and drain accepted work;
+  surviving pods claim the remaining eligible operations. Abruptly removed
+  owners recover only through lease expiry and fencing.
 - **Rolling update:** each pod submits exact claim candidates from its local
   plan. An old pod can claim only versions and checksums it can execute. A new
   version is a new ledger identity. Reusing a version with a changed checksum
   fails registration and readiness.
+- **Unknown-outcome compatibility:** apply migration 00003 before a mixed
+  rollout that can create blocked unknown outcomes. It makes pre-hardening
+  recovery fail closed instead of replaying an ambiguous effect. Old pods may
+  fail and restart when they encounter such a row; finish the rollout before
+  recovery resumes.
 - **Rollback:** an older binary may resume only definitions whose exact
   checksum still matches. Operations introduced only by the newer binary stay
   durable and unclaimed by the old binary. Roll back code and schema only when
@@ -66,7 +74,9 @@ Registration, recovery, claim, cancellation-detached `MarkRunning`, and final
 completion calls are limited by `ShutdownWait`. Each renewal is limited by
 the earlier of `ShutdownWait` and the remaining lease window, so a stalled
 renewal fails the fleet and cancels the attempt before an unbounded call can
-silently outlive ownership.
+silently outlive ownership. Readiness becomes false and `Run` returns on lease
+loss even when a handler ignores cancellation; the process manager must then
+terminate that uncooperative handler.
 
 `CancellationDrainOnly` handlers do not receive SIGTERM cancellation. If such
 a handler exceeds the shutdown bound, Go cannot stop its goroutine or prove an

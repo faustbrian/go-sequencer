@@ -76,8 +76,8 @@ type FleetOptions struct {
 }
 
 // Fleet claims locally registered operations without a leader. A stopped Run
-// owns no goroutines; a shutdown-timeout failure requires the process manager
-// to terminate any drain-only handler that could not cooperate.
+// owns no goroutines. A shutdown-timeout or lease-loss failure requires the
+// process manager to terminate any handler that could not cooperate.
 type Fleet struct {
 	plan       *Plan
 	store      LeaseStore
@@ -90,6 +90,13 @@ type Fleet struct {
 	workers       sync.WaitGroup
 	renewalStarts sync.WaitGroup
 	renewals      sync.WaitGroup
+}
+
+type attemptExecutionResult struct {
+	output Output
+	actor  string
+	reason string
+	err    error
 }
 
 // NewFleet validates a long-running runner without starting background work.
@@ -295,6 +302,13 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 			fleet.setState(RunnerFailed)
 			return ErrInvalidOperation
 		}
+		if claim.Attempt.Version != operation.spec.Version {
+			cancelWork()
+			_ = fleet.waitForDrain(results, active)
+			cancelRenewals()
+			fleet.setState(RunnerFailed)
+			return ErrDefinitionDrift
+		}
 		active, _ = bits.Add64(active, 1, 0)
 		fleet.observe(Event{Type: EventClaimed, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Claimed, At: now})
 		fleet.renewalStarts.Add(1)
@@ -305,7 +319,7 @@ func (fleet *Fleet) Run(ctx context.Context) error {
 }
 
 func isRunCancellation(ctx context.Context, err error) bool {
-	return ctx.Err() != nil && errors.Is(err, ctx.Err())
+	return ctx.Err() != nil && !errors.Is(err, ErrUnknownResult) && errors.Is(err, ctx.Err())
 }
 
 func (fleet *Fleet) waitForCapacity(ctx context.Context, results <-chan error, active *uint64) error {
@@ -406,16 +420,17 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 	fleet.observe(Event{Type: EventRunning, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Running, At: now})
 
 	worker := &Runner{options: fleet.options.RunnerOptions}
-	var output Output
-	var actor, reason string
-	output, actor, reason, executionErr := worker.runAttempt(attemptContext, operation.spec, claim.Attempt)
-	stopRenewal()
-	<-renewalStopped
-	select {
-	case err := <-renewalError:
-		return fmt.Errorf("sequencer: renew accepted attempt lease: %w", err)
-	default:
+	executionResult := make(chan attemptExecutionResult, 1)
+	go func() {
+		output, actor, reason, err := worker.runAttempt(attemptContext, operation.spec, claim.Attempt)
+		executionResult <- attemptExecutionResult{output: output, actor: actor, reason: reason, err: err}
+	}()
+	result, renewalErr := waitForAttempt(executionResult, renewalError, stopRenewal, renewalStopped)
+	if renewalErr != nil {
+		fleet.setState(RunnerFailed)
+		return fmt.Errorf("sequencer: renew accepted attempt lease: %w", renewalErr)
 	}
+	output, actor, reason, executionErr := result.output, result.actor, result.reason, result.err
 	retryException := operation.spec.Policy.RetryMode == DurableRetries && errors.Is(executionErr, ErrRetryable)
 	exceptions := claim.Budget.Exceptions
 	if retryException {
@@ -439,6 +454,24 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 	}
 	fleet.observe(Event{Type: EventCompleted, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
 	return nil
+}
+
+func waitForAttempt(execution <-chan attemptExecutionResult, renewalFailure <-chan error, stopRenewal context.CancelFunc, renewalStopped <-chan struct{}) (attemptExecutionResult, error) {
+	select {
+	case result := <-execution:
+		stopRenewal()
+		<-renewalStopped
+		select {
+		case err := <-renewalFailure:
+			return attemptExecutionResult{}, err
+		default:
+			return result, nil
+		}
+	case err := <-renewalFailure:
+		stopRenewal()
+		<-renewalStopped
+		return attemptExecutionResult{}, err
+	}
 }
 
 func (fleet *Fleet) renewLease(ctx context.Context, ready <-chan struct{}, cancelAttempt context.CancelFunc, ownership Ownership, attempt uint, until time.Time, stopped chan<- struct{}, failed chan<- error) {

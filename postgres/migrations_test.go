@@ -42,6 +42,23 @@ func TestMigrationsExposePinnedDependencyExpansion(t *testing.T) {
 	}
 }
 
+func TestMigrationsFenceLegacyUnknownRecovery(t *testing.T) {
+	t.Parallel()
+
+	data, err := fs.ReadFile(postgres.Migrations(), "00003_block_legacy_unknown_recovery.sql")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	for _, required := range []string{
+		"OLD.unknown_outcome = 0", "OLD.state IN ('claimed', 'running')",
+		"NEW.state = 'eligible'", "BEFORE UPDATE OF state",
+	} {
+		if !strings.Contains(string(data), required) {
+			t.Errorf("migration missing %q", required)
+		}
+	}
+}
+
 func TestNewRequiresPool(t *testing.T) {
 	t.Parallel()
 

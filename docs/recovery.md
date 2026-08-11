@@ -44,8 +44,11 @@ release.
 
 Fleet runners recover expired attempts before claiming. Multiple replicas may
 do so concurrently; store serialization and PostgreSQL row locks select the
-winner. Indeterminate backlog consumes no worker capacity. When policy or exact
-reconciliation authorizes replay, the next claim increments the attempt and
-fencing token so an old completion remains stale. Renewal extends ownership
+winner. Each recovery call durably settles at most 32 leases in deterministic
+expiry and operation-identity order, so a large backlog cannot create one
+unbounded transaction or mutex hold. Subsequent fleet polls settle later
+batches. Indeterminate backlog consumes no worker capacity. When policy or
+exact reconciliation authorizes replay, the next claim increments the attempt
+and fencing token so an old completion remains stale. Renewal extends ownership
 only; stopping renewal or clearing a completed lease never asserts that an
 uncooperative external effect stopped.

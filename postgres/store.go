@@ -584,6 +584,8 @@ WITH candidates AS MATERIALIZED (
     FROM sequencer_operations
     WHERE state IN ('claimed', 'running')
       AND lease_expires_at <= clock_timestamp()
+    ORDER BY lease_expires_at, operation_id, version
+    LIMIT $1
     FOR UPDATE SKIP LOCKED
 ), attempts AS (
     UPDATE sequencer_attempts attempt SET
@@ -653,7 +655,7 @@ SELECT (SELECT count(*) FROM candidates),
        (SELECT count(*) FROM expired),
        (SELECT count(*) FROM unknown_events),
        (SELECT count(*) FROM attempts WHERE unknown_outcome = 1),
-       (SELECT count(*) FROM eligible_events)`).Scan(
+	   (SELECT count(*) FROM eligible_events)`, sequencer.DefaultRecoveryBatchSize).Scan(
 		&candidates, &attempts, &projections, &unknownAudits, &replayable, &replayAudits,
 	)
 	if err != nil {

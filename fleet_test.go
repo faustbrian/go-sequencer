@@ -51,8 +51,7 @@ func TestFleetStopsAcceptingBeforeCancelingOwnedAttempts(t *testing.T) {
 	}
 
 	runContext, terminate := context.WithCancel(context.Background())
-	runDone := make(chan error, 1)
-	go func() { runDone <- fleet.Run(runContext) }()
+	runDone := startFleet(runContext, t, fleet)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -135,8 +134,8 @@ func TestFleetRenewsAcceptedAttemptsAndStopsRenewalBeforeCompletion(t *testing.T
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	defer cancel()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-store.renewed:
 	case <-time.After(time.Second):
@@ -196,8 +195,7 @@ func TestFleetFailsClosedWhenLeaseRenewalLosesOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(context.Background()) }()
+	done := startFleet(context.Background(), t, fleet)
 	select {
 	case err := <-done:
 		if !errors.Is(err, sequencer.ErrStaleOwner) {
@@ -208,6 +206,50 @@ func TestFleetFailsClosedWhenLeaseRenewalLosesOwnership(t *testing.T) {
 	}
 	if got := fleet.State(); got != sequencer.RunnerFailed {
 		t.Fatalf("state = %s, want failed", got)
+	}
+}
+
+func TestFleetFailsReadinessWhenUncooperativeHandlerOutlivesLease(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	spec := validSpec("fleet.stale-uncooperative")
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		close(started)
+		<-release
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &failingRenewStore{Store: memory.New(), err: sequencer.ErrStaleOwner}
+	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
+		RunnerOptions: sequencer.RunnerOptions{Owner: "pod-stale-uncooperative"},
+		ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+		MaxConcurrency: 1, ShutdownWait: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := startFleet(context.Background(), t, fleet)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("uncooperative handler did not start")
+	}
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, sequencer.ErrStaleOwner) {
+			t.Fatalf("Run() error = %v, want stale owner", runErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fleet stayed ready behind uncooperative stale work")
+	}
+	if fleet.Ready() || fleet.State() != sequencer.RunnerFailed {
+		t.Fatalf("state = %s, ready = %t; want failed and not ready", fleet.State(), fleet.Ready())
 	}
 }
 
@@ -233,8 +275,7 @@ func TestFleetIgnoresRenewalCancellationAfterAttemptStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-store.entered:
 	case <-time.After(time.Second):
@@ -282,8 +323,7 @@ func TestFleetDrainOnlyAttemptBecomesUnknownAndCannotCompleteAfterTakeover(t *te
 		t.Fatal(err)
 	}
 	ctx, terminate := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -475,8 +515,7 @@ func TestFleetDefaultShutdownWaitAllowsCooperativeCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -509,6 +548,40 @@ func TestFleetFailsClosedOnStoreCandidateOutsideLocalRegistry(t *testing.T) {
 	defer cancel()
 	if err := fleet.Run(ctx); !errors.Is(err, sequencer.ErrInvalidOperation) || fleet.State() != sequencer.RunnerFailed {
 		t.Fatalf("Run() error = %v, state = %s", err, fleet.State())
+	}
+}
+
+func TestFleetRejectsClaimForDifferentGenerationBeforeHandlerExecution(t *testing.T) {
+	t.Parallel()
+
+	invocations := 0
+	spec := validSpec("fleet.generation")
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		invocations++
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &substitutedFleetGenerationStore{substitutedGenerationStore: substitutedGenerationStore{
+		Store: memory.New(), operationID: spec.ID, version: spec.Version + 1,
+	}}
+	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
+		RunnerOptions: sequencer.RunnerOptions{Owner: "pod"},
+		ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+		MaxConcurrency: 1, ShutdownWait: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := fleet.Run(ctx); !errors.Is(err, sequencer.ErrDefinitionDrift) || fleet.State() != sequencer.RunnerFailed {
+		t.Fatalf("Run() error = %v, state = %s", err, fleet.State())
+	}
+	if invocations != 0 {
+		t.Fatalf("handler invocations = %d, want 0", invocations)
 	}
 }
 
@@ -570,8 +643,7 @@ func TestFleetDurableRetriesRemainBoundedAndObservable(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-succeeded:
 	case <-time.After(time.Second):
@@ -644,8 +716,7 @@ func TestFleetResetStartsFreshDurableRetryBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-succeeded:
 	case <-time.After(time.Second):
@@ -686,15 +757,14 @@ func TestFleetRunOwnsOneLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	defer cancel()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("fleet did not start")
 	}
-	second := make(chan error, 1)
-	go func() { second <- fleet.Run(context.Background()) }()
+	second := startFleet(context.Background(), t, fleet)
 	select {
 	case err := <-second:
 		if !errors.Is(err, sequencer.ErrInvalidTransition) {
@@ -747,7 +817,7 @@ func TestFleetBoundsConcurrentAcceptedAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
+	done := startFleet(ctx, t, fleet)
 	runAwaited := false
 	defer func() {
 		cancel()
@@ -760,7 +830,6 @@ func TestFleetBoundsConcurrentAcceptedAttempts(t *testing.T) {
 		case <-time.After(time.Second):
 		}
 	}()
-	go func() { done <- fleet.Run(ctx) }()
 	for range 2 {
 		select {
 		case <-started:
@@ -838,8 +907,7 @@ func TestFleetRecoversExpiredAcceptedAttemptBeforeClaimingTakeover(t *testing.T)
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case attempt := <-takeover:
 		if attempt.Number != 2 || attempt.Fencing <= old.Attempt.Fencing {
@@ -914,8 +982,7 @@ func TestFleetDoesNotExecuteRecoveredAttemptBeyondSharedBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case event := <-completed:
 		if event.State != sequencer.Failed || !errors.Is(event.Err, sequencer.ErrBudgetExhausted) {
@@ -983,8 +1050,7 @@ func TestFleetDoesNotReplayExpiredUnknownWorkByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	recoveryDeadline := time.Now().Add(time.Second)
 	for {
 		record, snapshotErr := store.Snapshot(context.Background(), spec.ID, spec.Version)
@@ -1062,8 +1128,7 @@ func TestFleetFailsClosedAtEveryDurabilityBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			done := make(chan error, 1)
-			go func() { done <- fleet.Run(context.Background()) }()
+			done := startFleet(context.Background(), t, fleet)
 			select {
 			case err := <-done:
 				if !errors.Is(err, cause) {
@@ -1100,8 +1165,7 @@ func TestFleetBoundsDetachedMarkRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(context.Background()) }()
+	done := startFleet(context.Background(), t, fleet)
 	select {
 	case <-store.entered:
 	case <-time.After(time.Second):
@@ -1154,8 +1218,7 @@ func TestFleetBoundsEachLeaseRenewal(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-store.entered:
 	case <-time.After(time.Second):
@@ -1218,8 +1281,7 @@ func TestFleetBoundsRenewalByActualRemainingLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(context.Background()) }()
+	done := startFleet(context.Background(), t, fleet)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -1279,8 +1341,7 @@ func TestFleetRejectsExpiredAndRegressingRenewalDeadlines(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			done := make(chan error, 1)
-			go func() { done <- fleet.Run(context.Background()) }()
+			done := startFleet(context.Background(), t, fleet)
 			select {
 			case <-started:
 			case <-time.After(time.Second):
@@ -1322,8 +1383,7 @@ func TestFleetBoundsRegistrationRecoveryAndClaimCalls(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			done := make(chan error, 1)
-			go func() { done <- fleet.Run(ctx) }()
+			done := startFleet(ctx, t, fleet)
 			select {
 			case <-store.entered:
 			case <-time.After(time.Second):
@@ -1409,6 +1469,38 @@ func TestFleetDoesNotMaskDurabilityFailureThatRacesCancellation(t *testing.T) {
 	}
 }
 
+func TestFleetDoesNotMaskUnknownDurabilityThatRacesCancellation(t *testing.T) {
+	t.Parallel()
+
+	for _, boundary := range []string{"register", "recovery", "claim"} {
+		t.Run(boundary, func(t *testing.T) {
+			spec := validSpec(sequencer.OperationID("fleet.cancel-unknown-" + boundary))
+			plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			store := &cancelDuringPollStore{
+				Store: memory.New(), cancel: cancel, boundary: boundary,
+				err: sequencer.UnknownResult(context.Canceled),
+			}
+			fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
+				RunnerOptions: sequencer.RunnerOptions{Owner: "pod"},
+				ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+				MaxConcurrency: 1, ShutdownWait: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := fleet.Run(ctx); !errors.Is(err, sequencer.ErrUnknownResult) || fleet.State() != sequencer.RunnerFailed {
+				t.Fatalf("Run() error = %v, state = %s", err, fleet.State())
+			}
+		})
+	}
+}
+
 func TestFleetPreservesApprovalBoundaryForAcceptedAttempts(t *testing.T) {
 	t.Parallel()
 
@@ -1441,8 +1533,7 @@ func TestFleetPreservesApprovalBoundaryForAcceptedAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case event := <-completed:
 		if event.State != sequencer.Blocked || !errors.Is(event.Err, sequencer.ErrBlocked) {
@@ -1489,8 +1580,7 @@ func TestFleetDrainReportsDurabilityFailureFromAcceptedAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- fleet.Run(ctx) }()
+	done := startFleet(ctx, t, fleet)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -1511,6 +1601,27 @@ func awaitFleetResult(t *testing.T, results <-chan error) error {
 		t.Fatal("fleet did not stop within the test bound")
 		return nil
 	}
+}
+
+func startFleet(parent context.Context, t *testing.T, fleet *sequencer.Fleet) <-chan error {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(parent)
+	results := make(chan error, 1)
+	go func() {
+		defer close(results)
+		results <- fleet.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-results:
+		case <-time.After(time.Second):
+			t.Error("fleet did not stop during test cleanup")
+		}
+	})
+
+	return results
 }
 
 type leaseTrackingStore struct {
@@ -1624,6 +1735,19 @@ func (store *cancelAfterRegisterStore) Register(ctx context.Context, registratio
 }
 
 type unexpectedClaimStore struct{ *memory.Store }
+
+type substitutedFleetGenerationStore struct {
+	substitutedGenerationStore
+	claimed bool
+}
+
+func (store *substitutedFleetGenerationStore) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
+	if store.claimed {
+		return sequencer.Claim{}, sequencer.ErrNoEligibleOperation
+	}
+	store.claimed = true
+	return store.substitutedGenerationStore.ClaimNext(ctx, request)
+}
 
 func (store *unexpectedClaimStore) ClaimNext(context.Context, sequencer.ClaimRequest) (sequencer.Claim, error) {
 	return sequencer.Claim{Attempt: sequencer.Attempt{

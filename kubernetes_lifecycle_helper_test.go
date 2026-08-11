@@ -63,7 +63,7 @@ func TestKubernetesLifecycleHelper(t *testing.T) {
 	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
 		RunnerOptions: sequencer.RunnerOptions{
 			Owner:         requiredEnvironment(t, "POD_UID"),
-			LeaseDuration: 25 * time.Second,
+			LeaseDuration: time.Duration(environmentUint(t, "SEQUENCER_LEASE_MILLISECONDS", 25_000)) * time.Millisecond,
 		},
 		ClaimInterval:  100 * time.Millisecond,
 		RenewInterval:  time.Second,
@@ -74,8 +74,7 @@ func TestKubernetesLifecycleHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runDone := make(chan error, 1)
-	go func() { runDone <- fleet.Run(runContext) }()
+	runDone := startFleet(runContext, t, fleet)
 
 	server := &http.Server{Addr: ":8080", Handler: kubernetesProbeHandler(fleet, &started), ReadHeaderTimeout: time.Second}
 	serverDone := make(chan error, 1)
@@ -103,7 +102,7 @@ func kubernetesOperationSpec(id sequencer.OperationID, version uint, behavior st
 		Description: "Kubernetes lifecycle proof operation", Channel: "kubernetes",
 		Policy: sequencer.Policy{
 			Mode: sequencer.OneTime, MaxAttempts: 3, MaxExceptions: 3,
-			Timeout: 20 * time.Second, Cancellation: sequencer.CancellationDrainOnly,
+			Timeout: 8 * time.Second, Cancellation: sequencer.CancellationDrainOnly,
 			UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
 		},
 		Handler: sequencer.HandlerFunc(func(ctx context.Context, attempt sequencer.Attempt) (sequencer.Output, error) {

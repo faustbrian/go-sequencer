@@ -55,14 +55,8 @@ func TestFleetReplicasClaimLeaderlesslyWithoutDuplicateCompletion(t *testing.T) 
 	}
 	first, second := newReplica("pod-a"), newReplica("pod-b")
 	ctx, cancel := context.WithCancel(context.Background())
-	type fleetResult struct {
-		owner string
-		state sequencer.RunnerState
-		err   error
-	}
-	done := make(chan fleetResult, 2)
-	go func() { done <- fleetResult{owner: "pod-a", err: first.Run(ctx), state: first.State()} }()
-	go func() { done <- fleetResult{owner: "pod-b", err: second.Run(ctx), state: second.State()} }()
+	firstDone := startFleet(ctx, t, first)
+	secondDone := startFleet(ctx, t, second)
 	for range operationCount {
 		select {
 		case <-completed:
@@ -71,14 +65,16 @@ func TestFleetReplicasClaimLeaderlesslyWithoutDuplicateCompletion(t *testing.T) 
 		}
 	}
 	cancel()
-	for range 2 {
-		select {
-		case result := <-done:
-			if result.err != nil {
-				t.Fatalf("%s Run() error = %v, state = %s", result.owner, result.err, result.state)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("replica did not stop within the test bound")
+	for _, replica := range []struct {
+		owner string
+		fleet *sequencer.Fleet
+		done  <-chan error
+	}{
+		{owner: "pod-a", fleet: first, done: firstDone},
+		{owner: "pod-b", fleet: second, done: secondDone},
+	} {
+		if err := awaitFleetResult(t, replica.done); err != nil {
+			t.Fatalf("%s Run() error = %v, state = %s", replica.owner, err, replica.fleet.State())
 		}
 	}
 	mu.Lock()

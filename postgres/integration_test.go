@@ -64,6 +64,7 @@ func TestPostgresStoreFailsClosedAndRecoversAfterServerRestart(t *testing.T) {
 	t.Cleanup(pool.Close)
 	applyMigration(t, ctx, pool, "00001_create_sequencer_ledger.sql")
 	applyMigration(t, ctx, pool, "00002_pin_dependency_definitions.sql")
+	applyMigration(t, ctx, pool, "00003_block_legacy_unknown_recovery.sql")
 	store, err := sequencerpostgres.New(pool)
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +173,7 @@ INSERT INTO sequencer_operations (
 		t.Fatal(err)
 	}
 	applyMigration(t, ctx, pool, "00002_pin_dependency_definitions.sql")
+	applyMigration(t, ctx, pool, "00003_block_legacy_unknown_recovery.sql")
 	if _, err := pool.Exec(ctx, `
 UPDATE sequencer_operations SET channel = 'deploy'
 WHERE operation_id = 'migration.legacy' AND version = 1`); err != nil {
@@ -192,6 +194,36 @@ SELECT dependency_refs::text FROM sequencer_operations WHERE operation_id = 'mig
 	store, err := sequencerpostgres.New(pool)
 	if err != nil {
 		t.Fatal(err)
+	}
+	const recoveryBatchSize = 32
+	for index := recoveryBatchSize; index >= 0; index-- {
+		id := sequencer.OperationID(fmt.Sprintf("recovery.batch-%02d", index))
+		if err := store.Register(ctx, []sequencer.Registration{{ID: id, Version: 1, Checksum: "sha256:" + string(id)}}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
+			OperationIDs: []sequencer.OperationID{id}, Owner: "recovery-owner",
+			Now: time.Now(), LeaseDuration: time.Millisecond,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expiredAt := time.Now().Add(-time.Second)
+	if _, err := pool.Exec(ctx, `
+UPDATE sequencer_operations
+SET lease_expires_at = $1
+WHERE operation_id LIKE 'recovery.batch-%'`, expiredAt); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := store.RecoverExpired(ctx, time.Now()); err != nil || recovered != recoveryBatchSize {
+		t.Fatalf("first bounded RecoverExpired() = %d, %v; want %d", recovered, err, recoveryBatchSize)
+	}
+	remaining, err := store.Snapshot(ctx, "recovery.batch-32", 1)
+	if err != nil || remaining.State != sequencer.Claimed {
+		t.Fatalf("remaining recovery Snapshot() = %+v, %v; want claimed", remaining, err)
+	}
+	if recovered, err := store.RecoverExpired(ctx, time.Now()); err != nil || recovered != 1 {
+		t.Fatalf("second bounded RecoverExpired() = %d, %v; want 1", recovered, err)
 	}
 	oversizedDependencies := make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies)
 	for index := range oversizedDependencies {
@@ -510,6 +542,9 @@ INSERT INTO sequencer_attempts (
 		}
 	}
 	time.Sleep(1100 * time.Millisecond)
+	if _, err := pool.Exec(ctx, legacyBlockingRecoverySQL); err == nil {
+		t.Fatal("legacy recovery replayed a blocked unknown outcome")
+	}
 	if recovered, err := store.RecoverExpired(ctx, time.Now()); err != nil || recovered != len(unknowns) {
 		t.Fatalf("unknown RecoverExpired() = %d, %v", recovered, err)
 	}
@@ -738,6 +773,25 @@ WHERE operation_id = $1 AND version = $2`, corrupt.ID, corrupt.Version); err != 
 		}
 	}
 }
+
+const legacyBlockingRecoverySQL = `
+WITH candidates AS MATERIALIZED (
+    SELECT operation_id, version, attempt_number, owner, fencing_token, state
+    FROM sequencer_operations
+    WHERE operation_id = 'unknown.block'
+      AND state IN ('claimed', 'running')
+      AND lease_expires_at <= clock_timestamp()
+    FOR UPDATE SKIP LOCKED
+), expired AS (
+    UPDATE sequencer_operations operation SET
+        state = 'eligible', owner = NULL, lease_expires_at = NULL,
+        eligible_at = clock_timestamp(), updated_at = clock_timestamp()
+    FROM candidates
+    WHERE operation.operation_id = candidates.operation_id
+      AND operation.version = candidates.version
+    RETURNING operation.operation_id
+)
+SELECT count(*) FROM expired`
 
 func applyMigration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name string) {
 	t.Helper()

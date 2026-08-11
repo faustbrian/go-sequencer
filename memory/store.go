@@ -29,6 +29,8 @@ type Store struct {
 	mu       sync.Mutex
 	entries  map[key]*entry
 	versions map[sequencer.OperationID][]uint
+	leases   leaseQueue
+	leased   map[key]*leasedEntry
 }
 
 // New constructs an empty store without background goroutines.
@@ -36,6 +38,7 @@ func New() *Store {
 	return &Store{
 		entries:  make(map[key]*entry),
 		versions: make(map[sequencer.OperationID][]uint),
+		leased:   make(map[key]*leasedEntry),
 	}
 }
 
@@ -202,6 +205,7 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		current.record.RunAttempt++
 		current.record.LeaseExpiresAt = request.Now.Add(request.LeaseDuration)
 		current.record.UpdatedAt = request.Now
+		store.setLease(key{current.record.ID, current.record.Version}, current.record.LeaseExpiresAt)
 		attempt := sequencer.Attempt{
 			OperationID: current.record.ID, Version: current.record.Version,
 			Number: current.record.AttemptNumber, Owner: request.Owner,
@@ -276,6 +280,7 @@ func (store *Store) RenewLease(ctx context.Context, ownership sequencer.Ownershi
 	if until.After(current.record.LeaseExpiresAt) {
 		current.record.LeaseExpiresAt = until
 		current.record.UpdatedAt = now
+		store.setLease(key{current.record.ID, current.record.Version}, until)
 	}
 	return current.record.LeaseExpiresAt, nil
 }
@@ -334,6 +339,7 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	current.record.State = completion.State
 	current.record.UpdatedAt = completion.At
 	current.record.LeaseExpiresAt = time.Time{}
+	store.clearLease(key{current.record.ID, current.record.Version})
 	if completion.State == sequencer.Retryable || completion.State == sequencer.Deferred {
 		current.record.EligibleAt = completion.EligibleAt
 	}
@@ -362,25 +368,28 @@ func (store *Store) RecoverExpired(ctx context.Context, now time.Time) (int, err
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	recovered := 0
-	for _, current := range store.entries {
-		if (current.record.State == sequencer.Claimed || current.record.State == sequencer.Running) && !current.record.LeaseExpiresAt.After(now) {
-			from := current.record.State
-			attempt := &current.attempts[len(current.attempts)-1]
-			attempt.State = sequencer.Indeterminate
-			attempt.CompletedAt = now
-			attempt.ErrorDetail = sequencer.ErrUnknownResult.Error()
-			current.record.State = sequencer.Indeterminate
-			current.record.LeaseExpiresAt = time.Time{}
-			current.record.UpdatedAt = now
-			current.appendAudit(from, sequencer.Indeterminate, now, "system", "lease expired; outcome unknown")
-			if current.record.UnknownOutcome == sequencer.UnknownOutcomeReplayIdempotent {
-				current.record.State = sequencer.Eligible
-				current.record.EligibleAt = now
-				current.appendAudit(sequencer.Indeterminate, sequencer.Eligible, now, "system", "idempotent replay authorized")
-			}
-			current.record.Owner = ""
-			recovered++
+	for recovered < sequencer.DefaultRecoveryBatchSize {
+		identifier, ok := store.popExpiredLease(now)
+		if !ok {
+			break
 		}
+		current := store.entries[identifier]
+		from := current.record.State
+		attempt := &current.attempts[len(current.attempts)-1]
+		attempt.State = sequencer.Indeterminate
+		attempt.CompletedAt = now
+		attempt.ErrorDetail = sequencer.ErrUnknownResult.Error()
+		current.record.State = sequencer.Indeterminate
+		current.record.LeaseExpiresAt = time.Time{}
+		current.record.UpdatedAt = now
+		current.appendAudit(from, sequencer.Indeterminate, now, "system", "lease expired; outcome unknown")
+		if current.record.UnknownOutcome == sequencer.UnknownOutcomeReplayIdempotent {
+			current.record.State = sequencer.Eligible
+			current.record.EligibleAt = now
+			current.appendAudit(sequencer.Indeterminate, sequencer.Eligible, now, "system", "idempotent replay authorized")
+		}
+		current.record.Owner = ""
+		recovered++
 	}
 	return recovered, nil
 }

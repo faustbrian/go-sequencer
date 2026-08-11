@@ -116,7 +116,11 @@ func benchmarkPostgresPool(benchmark *testing.B, ctx context.Context) *pgxpool.P
 		benchmark.Fatal(err)
 	}
 	benchmark.Cleanup(pool.Close)
-	for _, name := range []string{"00001_create_sequencer_ledger.sql", "00002_pin_dependency_definitions.sql"} {
+	for _, name := range []string{
+		"00001_create_sequencer_ledger.sql",
+		"00002_pin_dependency_definitions.sql",
+		"00003_block_legacy_unknown_recovery.sql",
+	} {
 		migration, err := fs.ReadFile(sequencerpostgres.Migrations(), name)
 		if err != nil {
 			benchmark.Fatal(err)

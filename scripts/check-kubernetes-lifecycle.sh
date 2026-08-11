@@ -126,6 +126,25 @@ YAML
 kube rollout status deployment/postgres --timeout=120s >/dev/null
 
 database_url='postgres://sequencer:sequencer@postgres:5432/sequencer?sslmode=disable'
+kube run postgres-service-ready --restart=Never --image="${POSTGRES_IMAGE}" \
+    --env=PGPASSWORD=sequencer --command -- sh -ec \
+    'for attempt in $(seq 1 120); do pg_isready -h postgres -U sequencer -d sequencer && exit 0; sleep 0.25; done; exit 1' >/dev/null
+for _ in {1..120}; do
+    readiness_phase="$(kube get pod postgres-service-ready -o jsonpath='{.status.phase}')"
+    [[ "${readiness_phase}" == "Succeeded" ]] && break
+    if [[ "${readiness_phase}" == "Failed" ]]; then
+        kube logs postgres-service-ready >&2 || true
+        exit 1
+    fi
+    sleep 0.25
+done
+if [[ "${readiness_phase}" != "Succeeded" ]]; then
+    kube describe pod postgres-service-ready >&2 || true
+    kube logs postgres-service-ready >&2 || true
+    exit 1
+fi
+kube delete pod postgres-service-ready --wait=true >/dev/null
+
 kube run migrate --restart=Never --image="${image}" --image-pull-policy=Never \
     --env="DATABASE_URL=${database_url}" --env=SEQUENCER_HELPER_MODE=migrate >/dev/null
 for _ in {1..120}; do
@@ -170,6 +189,7 @@ spec:
             - {name: SEQUENCER_VERSION, value: "${version}"}
             - {name: SEQUENCER_BEHAVIOR, value: "${behavior}"}
             - {name: SEQUENCER_OPERATION_COUNT, value: "${operations}"}
+            - {name: SEQUENCER_LEASE_MILLISECONDS, value: "10000"}
             - name: POD_UID
               valueFrom: {fieldRef: {fieldPath: metadata.uid}}
           ports: [{name: probes, containerPort: 8080}]
@@ -184,7 +204,12 @@ spec:
             runAsNonRoot: true
             runAsUser: 65532
 YAML
-    kube rollout status "deployment/${name}" --timeout=120s >/dev/null
+    if ! kube rollout status "deployment/${name}" --timeout=120s >/dev/null; then
+        printf 'deployment did not become ready: %s\n' "${name}" >&2
+        kube get pods -l "app=${name}" -o wide >&2 || true
+        kube logs -l "app=${name}" --all-containers --tail=100 >&2 || true
+        return 1
+    fi
 }
 
 wait_sql() {
@@ -199,6 +224,7 @@ wait_sql() {
 }
 
 # SIGTERM closes readiness before a drain-only accepted attempt completes.
+printf 'scenario: sigterm-readiness-drain\n'
 reset_ledger
 apply_runner graceful 1 1 drain 1 8
 graceful_pod="$(kube get pods -l app=graceful -o jsonpath='{.items[0].metadata.name}')"
@@ -223,6 +249,7 @@ wait_sql "SELECT state = 'succeeded' AND attempt_number = 1 FROM sequencer_opera
 kube delete deployment graceful --wait=true >/dev/null
 
 # An abrupt pod kill loses renewal; replacement recovers expiry and uses a higher fence.
+printf 'scenario: abrupt-kill-lease-expiry-recovery\n'
 reset_ledger
 apply_runner abrupt 1 1 crash-recover 1 1
 abrupt_pod="$(kube get pods -l app=abrupt -o jsonpath='{.items[0].metadata.name}')"
@@ -233,15 +260,40 @@ wait_sql "SELECT state = 'succeeded' AND attempt_number = 2 AND fencing_token = 
 wait_sql "SELECT count(*) = 1 FROM sequencer_attempts WHERE operation_id = 'kubernetes.lifecycle' AND version = 1 AND state = 'indeterminate'"
 kube delete deployment abrupt --wait=true >/dev/null
 
-# Multiple replicas claim without a leader and complete each operation once.
+# Scale up from one to three leaderless replicas, then scale down while work is
+# active; every operation still completes once under database fencing.
+printf 'scenario: leaderless-scale-up-scale-down\n'
 reset_ledger
-apply_runner leaderless 3 1 leaderless 12 5
-wait_sql "SELECT count(*) = 12 AND bool_and(state = 'succeeded') FROM sequencer_operations WHERE operation_id LIKE 'kubernetes.leaderless-%'" 160
+apply_runner leaderless 1 1 leaderless 24 5
+wait_sql "SELECT count(*) >= 1 FROM sequencer_operations WHERE operation_id LIKE 'kubernetes.leaderless-%' AND state = 'running'"
+kube scale deployment/leaderless --replicas=3 >/dev/null
+kube rollout status deployment/leaderless --timeout=120s >/dev/null
 wait_sql "SELECT count(DISTINCT owner) >= 2 FROM sequencer_attempts WHERE operation_id LIKE 'kubernetes.leaderless-%'"
-wait_sql "SELECT count(*) = 12 FROM sequencer_attempts WHERE operation_id LIKE 'kubernetes.leaderless-%'"
+kube scale deployment/leaderless --replicas=1 >/dev/null
+kube rollout status deployment/leaderless --timeout=120s >/dev/null
+wait_sql "SELECT count(*) = 24 AND bool_and(state = 'succeeded') FROM sequencer_operations WHERE operation_id LIKE 'kubernetes.leaderless-%'" 240
+wait_sql "SELECT count(*) = 24 FROM sequencer_attempts WHERE operation_id LIKE 'kubernetes.leaderless-%'"
 kube delete deployment leaderless --wait=true >/dev/null
 
+# Suspending the owning container stops heartbeats without deleting the pod;
+# another replica recovers the expired lease under a higher fence.
+printf 'scenario: container-suspension-takeover\n'
+reset_ledger
+apply_runner suspended 2 1 crash-recover 1 5
+wait_sql "SELECT state = 'running' FROM sequencer_operations WHERE operation_id = 'kubernetes.lifecycle' AND version = 1"
+suspended_owner="$(kube exec deployment/postgres -- psql -U sequencer -d sequencer -Atc "SELECT owner FROM sequencer_operations WHERE operation_id = 'kubernetes.lifecycle' AND version = 1")"
+suspended_pod="$(kube get pods -l app=suspended -o json | jq -r --arg owner "${suspended_owner}" '.items[] | select(.metadata.uid == $owner) | .metadata.name')"
+[[ -n "${suspended_pod}" ]]
+suspended_container="$(kube get pod "${suspended_pod}" -o jsonpath='{.status.containerStatuses[0].containerID}')"
+suspended_container="${suspended_container#containerd://}"
+docker exec "${cluster_name}-control-plane" ctr -n k8s.io tasks kill --signal STOP "${suspended_container}"
+wait_sql "SELECT state = 'succeeded' AND attempt_number = 2 AND fencing_token = 2 FROM sequencer_operations WHERE operation_id = 'kubernetes.lifecycle' AND version = 1" 160
+wait_sql "SELECT count(*) = 1 FROM sequencer_attempts WHERE operation_id = 'kubernetes.lifecycle' AND version = 1 AND state = 'indeterminate'"
+docker exec "${cluster_name}-control-plane" ctr -n k8s.io tasks kill --signal CONT "${suspended_container}" || true
+kube delete deployment suspended --wait=true >/dev/null
+
 # Old and new registries coexist; removing the new deployment leaves the old exact definition healthy.
+printf 'scenario: mixed-registry-rollout-rollback\n'
 reset_ledger
 apply_runner registry-old 1 1 normal 1 5
 apply_runner registry-new 1 2 normal 1 5
@@ -299,7 +351,8 @@ jq -n \
       scenarios: [
         "sigterm-readiness-drain",
         "abrupt-kill-lease-expiry-recovery",
-        "leaderless-replicas",
+        "leaderless-scale-up-scale-down",
+        "container-suspension-takeover",
         "mixed-registry-rollout-rollback"
       ],
       started_at: $started_at,

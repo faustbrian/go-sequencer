@@ -44,6 +44,11 @@ var (
 	ErrInvalidLease = errors.New("sequencer: invalid lease renewal")
 )
 
+const (
+	// DefaultRecoveryBatchSize bounds one expired-lease recovery transaction.
+	DefaultRecoveryBatchSize = 32
+)
+
 type classifiedError struct {
 	kind  error
 	cause error
@@ -253,6 +258,7 @@ type Store interface {
 	ClaimNext(context.Context, ClaimRequest) (Claim, error)
 	MarkRunning(context.Context, Ownership, time.Time) (AttemptRecord, error)
 	Complete(context.Context, Completion) error
+	// RecoverExpired settles at most DefaultRecoveryBatchSize expired leases.
 	RecoverExpired(context.Context, time.Time) (int, error)
 	Snapshot(context.Context, OperationID, uint) (Record, error)
 	History(context.Context, OperationID, uint, int) ([]AttemptRecord, error)

@@ -41,4 +41,4 @@ Start with the [quickstart](docs/quickstart.md), then read the
 the [fleet operation contract](docs/kubernetes.md). All documentation is indexed in
 [docs/README.md](docs/README.md).
 
-Requires Go 1.26.5. Run `make check` for the complete local gate.
+Requires Go 1.26.6. Run `make check` for the complete local gate.

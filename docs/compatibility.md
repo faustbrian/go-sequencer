@@ -1,6 +1,6 @@
 # Compatibility
 
-The module targets Go 1.26.5 and tests the current stable Go toolchain in CI.
+The module targets Go 1.26.6 and tests the current stable Go toolchain in CI.
 PostgreSQL 18 is the reference integration target; SQL uses ordinary arrays,
 JSONB, row locks, partial indexes, and server timestamps.
 

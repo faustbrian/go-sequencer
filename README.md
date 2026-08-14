@@ -42,3 +42,8 @@ the [fleet operation contract](docs/kubernetes.md). All documentation is indexed
 [docs/README.md](docs/README.md).
 
 Requires Go 1.26.6. Run `make check` for the complete local gate.
+
+## Ecosystem
+
+Use the [Golib documentation portal](https://github.com/faustbrian/golib/blob/main/docs/index.md)
+to choose companion packages, supported stacks, recipes, and operations guidance.

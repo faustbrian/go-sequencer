@@ -8,6 +8,8 @@
 
 ### Changed
 
+- Upgrade `golang.org/x/text` to v0.41.0 so the dependency graph no longer
+  contains GO-2026-5970.
 - Fence forward resets while a compensation is claimed, running, replayable,
   deferred, or indeterminate. PostgreSQL deployments must apply the staged
   generation-fence migrations after resolving legacy in-flight compensation.

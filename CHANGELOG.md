@@ -72,6 +72,8 @@
 
 ### Fixed
 
+- Convert platform-sized operation versions through checked signed parsing so
+  PostgreSQL ledger writes cannot narrow an oversized value.
 - Prevent a compensation accepted for one forward generation from crossing a
   reset or replay and acting on newer forward ownership, including during
   mixed-version PostgreSQL claim/reset races.

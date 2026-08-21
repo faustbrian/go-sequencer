@@ -1117,10 +1117,11 @@ func toUint64(value int64) (uint64, error) {
 }
 
 func toInt64(value uint) (int64, error) {
-	if uint64(value) > math.MaxInt64 {
+	parsed, err := strconv.ParseInt(strconv.FormatUint(uint64(value), 10), 10, 64)
+	if err != nil {
 		return 0, fmt.Errorf("%w: %d exceeds int64", errInvalidLedgerInteger, value)
 	}
-	return int64(value), nil
+	return parsed, nil
 }
 
 var _ sequencer.Store = (*Store)(nil)

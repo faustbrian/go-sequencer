@@ -136,10 +136,11 @@ func TestFleetRenewsAcceptedAttemptsAndStopsRenewalBeforeCompletion(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := startFleet(ctx, t, fleet)
+	var heartbeatAttempt uint
 	select {
-	case <-store.renewed:
+	case heartbeatAttempt = <-heartbeatAttempts:
 	case <-time.After(time.Second):
-		t.Fatal("accepted attempt lease was not renewed")
+		t.Fatal("accepted attempt lease renewal was not observed")
 	}
 	close(release)
 	select {
@@ -169,8 +170,8 @@ func TestFleetRenewsAcceptedAttemptsAndStopsRenewalBeforeCompletion(t *testing.T
 	if heartbeat == -1 || completed == -1 || heartbeat >= completed {
 		t.Fatalf("observed events = %v; want heartbeat before completion", observed)
 	}
-	if attempt := <-heartbeatAttempts; attempt != 1 {
-		t.Fatalf("heartbeat attempt = %d, want 1", attempt)
+	if heartbeatAttempt != 1 {
+		t.Fatalf("heartbeat attempt = %d, want 1", heartbeatAttempt)
 	}
 }
 
@@ -1796,13 +1797,11 @@ type leaseTrackingStore struct {
 	*memory.Store
 	mu        sync.Mutex
 	events    []string
-	renewed   chan struct{}
 	completed chan struct{}
 	signals   onceSignals
 }
 
 type onceSignals struct {
-	renewed   sync.Once
 	completed sync.Once
 }
 
@@ -2103,7 +2102,7 @@ func (store *cancelingRenewStore) RenewLease(ctx context.Context, _ sequencer.Ow
 
 func newLeaseTrackingStore() *leaseTrackingStore {
 	return &leaseTrackingStore{
-		Store: memory.New(), renewed: make(chan struct{}), completed: make(chan struct{}),
+		Store: memory.New(), completed: make(chan struct{}),
 	}
 }
 
@@ -2111,7 +2110,6 @@ func (store *leaseTrackingStore) RenewLease(ctx context.Context, ownership seque
 	store.mu.Lock()
 	store.events = append(store.events, "renew")
 	store.mu.Unlock()
-	store.signals.renewed.Do(func() { close(store.renewed) })
 	return store.Store.RenewLease(ctx, ownership, now, duration)
 }
 

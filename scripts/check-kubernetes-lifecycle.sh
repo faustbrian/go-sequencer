@@ -306,7 +306,7 @@ wait_sql "SELECT checksum = 'sha256:kubernetes-v1' FROM sequencer_operations WHE
 wait_sql "SELECT checksum = 'sha256:kubernetes-v2' FROM sequencer_operations WHERE operation_id = 'kubernetes.lifecycle' AND version = 2"
 kube delete deployment registry-old --wait=true >/dev/null
 
-completed_gate_input_sha256="$("${repository_root}/scripts/gate-input-digest.sh" interoperability .)"
+completed_gate_input_sha256="$("${repository_root}/.golib/scripts/gate-input-digest.sh" interoperability .)"
 if [[ "${completed_gate_input_sha256}" != "${gate_input_sha256}" ]]; then
     printf 'Kubernetes lifecycle gate inputs changed during execution\n' >&2
     exit 1

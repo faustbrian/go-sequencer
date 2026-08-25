@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/goidempotency"
+	sequencer "github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/goidempotency"
 )
 
 var errMissingCleanupDeadline = errors.New("cleanup context has no deadline")

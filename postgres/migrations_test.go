@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faustbrian/golib/pkg/sequencer/postgres"
+	"github.com/faustbrian/go-sequencer/postgres"
 )
 
 func TestMigrationsExposeVersionedDurableLedger(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/memory"
 )
 
 func TestStoreClaimsExactlyOnceAndEnforcesOwnership(t *testing.T) {

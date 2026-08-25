@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	sequencer "github.com/faustbrian/go-sequencer"
 )
 
 type key struct {

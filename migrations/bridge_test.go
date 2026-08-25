@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/faustbrian/golib/pkg/sequencer/migrations"
+	"github.com/faustbrian/go-sequencer/migrations"
 )
 
 func TestBridgeAssertsPrerequisiteWithoutOwningHistory(t *testing.T) {

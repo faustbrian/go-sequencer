@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	sequencer "github.com/faustbrian/go-sequencer"
 )
 
 func TestStoreInternalOrderingAndMissingLatest(t *testing.T) {

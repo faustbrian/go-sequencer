@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/golease"
+	sequencer "github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/golease"
 )
 
 var errMissingReleaseDeadline = errors.New("release context has no deadline")

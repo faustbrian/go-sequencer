@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/sequencehttp"
+	"github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/sequencehttp"
 )
 
 func TestHandlerRequiresApplicationAuthorization(t *testing.T) {

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/goidempotency"
-	"github.com/faustbrian/golib/pkg/sequencer/goqueue"
-	"github.com/faustbrian/golib/pkg/sequencer/goretry"
-	"github.com/faustbrian/golib/pkg/sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/goidempotency"
+	"github.com/faustbrian/go-sequencer/goqueue"
+	"github.com/faustbrian/go-sequencer/goretry"
+	"github.com/faustbrian/go-sequencer/memory"
 )
 
 const (

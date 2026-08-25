@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
-	sequencerpostgres "github.com/faustbrian/golib/pkg/sequencer/postgres"
+	sequencer "github.com/faustbrian/go-sequencer"
+	sequencerpostgres "github.com/faustbrian/go-sequencer/postgres"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/moby/moby/api/types/container"

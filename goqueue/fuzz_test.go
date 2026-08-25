@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faustbrian/golib/pkg/sequencer/goqueue"
+	"github.com/faustbrian/go-sequencer/goqueue"
 )
 
 var fuzzIdentifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)

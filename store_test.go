@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	sequencer "github.com/faustbrian/go-sequencer"
 )
 
 func TestClassifiedErrorsPreserveCause(t *testing.T) {

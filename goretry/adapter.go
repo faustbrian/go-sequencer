@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	sequencer "github.com/faustbrian/go-sequencer"
 )
 
 // ErrInvalidAdapter reports a missing bounded retry policy.

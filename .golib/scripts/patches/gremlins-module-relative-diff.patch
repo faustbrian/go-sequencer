@@ -1,0 +1,89 @@
+diff --git a/cmd/unleash.go b/cmd/unleash.go
+--- a/cmd/unleash.go
++++ b/cmd/unleash.go
+@@ -162 +162 @@
+-	fDiff, err := diff.New()
++	fDiff, err := diff.New(mod.Root)
+diff --git a/internal/diff/parse.go b/internal/diff/parse.go
+--- a/internal/diff/parse.go
++++ b/internal/diff/parse.go
+@@ -15,2 +15,2 @@
+-func New() (Diff, error) {
+-	return NewWithCmd(exec.Command)
++func New(root string) (Diff, error) {
++	return NewWithCmd(root, exec.Command)
+@@ -24 +24 @@
+-func NewWithCmd[T execCmd](cmdContext func(name string, args ...string) T) (Diff, error) {
++func NewWithCmd[T execCmd](root string, cmdContext func(name string, args ...string) T) (Diff, error) {
+@@ -33 +33 @@
+-	cmd := cmdContext("git", "diff", "--merge-base", diffRef)
++	cmd := cmdContext("git", "-C", root, "diff", "--relative", "--merge-base", diffRef)
+diff --git a/internal/diff/diff.go b/internal/diff/diff.go
+--- a/internal/diff/diff.go
++++ b/internal/diff/diff.go
+@@ -38,10 +38,19 @@
+-		if fragment.LinesAdded == 0 {
+-			continue
+-		}
+-
+-		startLine := int(fragment.NewPosition + fragment.LeadingContext)
+-
+-		changes = append(changes, Change{
+-			StartLine: startLine,
+-			EndLine:   startLine + int(fragment.LinesAdded-1),
+-		})
++		lineNumber := int(fragment.NewPosition)
++		for _, line := range fragment.Lines {
++			switch line.Op {
++			case gitdiff.OpAdd:
++				last := len(changes) - 1
++				if last >= 0 && changes[last].EndLine == lineNumber-1 {
++					changes[last].EndLine = lineNumber
++				} else {
++					changes = append(changes, Change{
++						StartLine: lineNumber,
++						EndLine:   lineNumber,
++					})
++				}
++				lineNumber++
++			case gitdiff.OpContext:
++				lineNumber++
++			case gitdiff.OpDelete:
++			}
++		}
+diff --git a/internal/diff/diff_test.go b/internal/diff/diff_test.go
+--- a/internal/diff/diff_test.go
++++ b/internal/diff/diff_test.go
+@@ -98,0 +99,11 @@
++		{
++			NewPosition: 500,
++			LinesAdded:  2,
++			Lines: []gitdiff.Line{
++				{Op: gitdiff.OpContext},
++				{Op: gitdiff.OpAdd},
++				{Op: gitdiff.OpContext},
++				{Op: gitdiff.OpContext},
++				{Op: gitdiff.OpAdd},
++			},
++		},
+@@ -109,0 +121,2 @@
++		{StartLine: 501, EndLine: 501},
++		{StartLine: 504, EndLine: 504},
+diff --git a/internal/diff/parse_test.go b/internal/diff/parse_test.go
+--- a/internal/diff/parse_test.go
++++ b/internal/diff/parse_test.go
+@@ -17 +17 @@
+-		d, err := NewWithCmd(m.call)
++		d, err := NewWithCmd("/repo", m.call)
+@@ -31 +31 @@
+-		_, err := NewWithCmd(m.call)
++		_, err := NewWithCmd("/repo", m.call)
+@@ -40 +40 @@
+-		expectedArgs := []string{"diff", "--merge-base", "test"}
++		expectedArgs := []string{"-C", "/repo", "diff", "--relative", "--merge-base", "test"}
+@@ -56 +56 @@
+-		_, err := NewWithCmd(m.call)
++		_, err := NewWithCmd("/repo", m.call)
+@@ -73 +73 @@
+-		result, err := NewWithCmd(m.call)
++		result, err := NewWithCmd("/repo", m.call)

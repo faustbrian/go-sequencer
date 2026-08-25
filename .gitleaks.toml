@@ -1,0 +1,62 @@
+title = "golib secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated local gate artifacts are not repository inputs."
+paths = ['''(?:^|/)\.artifacts(?:/.*)?$''']
+
+[[allowlists]]
+description = "The pinned public GitHub OpenAPI document contains example credentials."
+paths = ['''^(?:pkg/openapi/)?specification/independent/github-rest-api/api\.github\.com\.2022-11-28\.json$''']
+
+[[allowlists]]
+description = "API-diff pseudo-versions are immutable tool versions, not credentials."
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''(?i)^\s*api_?diff_version\s*(?:\?|:)?=\s*v[0-9][0-9A-Za-z.+-]*\s*$''']
+
+[[allowlists]]
+description = "The queue command documentation uses a non-secret idempotency example."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pkg/queue-control-plane/docs/api\.md$''']
+regexes = ['''(?i)"idempotency_key"\s*:\s*"maintenance-[0-9-]+"''']
+
+[[allowlists]]
+description = "Webhook vectors contain deliberate public test key material."
+targetRules = ["generic-api-key"]
+paths = ['''^(?:pkg/webhook/)?testdata/vectors/v1\.json$''']
+
+[[allowlists]]
+description = "HTTP signature differential tests use a deterministic public HMAC key."
+targetRules = ["generic-api-key"]
+paths = ['''^(?:pkg/http-signature/)?differential/shared-corpus/corpus_test\.go$''']
+
+[[allowlists]]
+description = "Capability interoperability fixture is a public signed token, not a JWT credential."
+targetRules = ["jwt"]
+paths = ['''^(?:pkg/capability/)?testdata/v1-hmac\.token$''']
+
+[[allowlists]]
+description = "Pinned Ethereum trie fixtures contain deliberate public test key material."
+targetRules = ["generic-api-key"]
+paths = ['''^(?:pkg/merkle-patricia-trie/)?testdata/ethereum-tests/TrieTests/trietest\.json$''']
+
+[[allowlists]]
+description = "Pinned Verkle source-file digests are checksums, not API credentials."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^(?:pkg/verkle-tree/)?specification/sources\.json$''']
+regexes = ['''^\s*"api(?:_eip7594)?\.go"\s*:\s*"[0-9a-f]{64}",?\s*$''']
+
+[[allowlists]]
+description = "Operational-assurance module fingerprints are checksums, not credentials."
+targetRules = ["generic-api-key", "confluent-secret-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^operational-assurance\.json$''']
+regexes = ['''^\s*"pkg/[^"]+"\s*:\s*"[0-9a-f]{64}",?\s*$''']

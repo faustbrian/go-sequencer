@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/goretry"
-	"github.com/faustbrian/golib/pkg/sequencer/memory"
-	"github.com/faustbrian/golib/pkg/sequencer/sequencertest"
+	sequencer "github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/goretry"
+	"github.com/faustbrian/go-sequencer/memory"
+	"github.com/faustbrian/go-sequencer/sequencertest"
 )
 
 func TestRunnerExecutesPlanInOrderAndReportsDurableResults(t *testing.T) {

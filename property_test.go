@@ -4,7 +4,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	sequencer "github.com/faustbrian/go-sequencer"
 )
 
 func TestPlanPropertyDependenciesAlwaysPrecedeDependents(t *testing.T) {

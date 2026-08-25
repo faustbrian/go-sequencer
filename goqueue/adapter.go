@@ -8,7 +8,7 @@ import (
 	"errors"
 	"regexp"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	sequencer "github.com/faustbrian/go-sequencer"
 )
 
 var (

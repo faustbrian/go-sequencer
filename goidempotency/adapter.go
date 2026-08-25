@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	sequencer "github.com/faustbrian/go-sequencer"
 )
 
 const (

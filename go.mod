@@ -1,4 +1,4 @@
-module github.com/faustbrian/golib/pkg/sequencer
+module github.com/faustbrian/go-sequencer
 
 go 1.26.6
 

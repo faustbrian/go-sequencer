@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/faustbrian/golib/pkg/sequencer"
+	"github.com/faustbrian/go-sequencer"
 )
 
 const maxRequestBytes = 8 << 10

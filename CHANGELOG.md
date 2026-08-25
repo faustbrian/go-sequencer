@@ -2,12 +2,15 @@
 
 ## Unreleased
 
+## 1.0.0 - 2026-08-25
+
 ### Documentation
 
 - Link the package README to the repository-wide Golib documentation portal.
 
 ### Changed
 
+- Publish the module from its standalone `github.com/faustbrian/go-sequencer` identity while preserving its documented API and behavior.
 - Upgrade `golang.org/x/text` to v0.41.0 so the dependency graph no longer
   contains GO-2026-5970.
 - Fence forward resets while a compensation is claimed, running, replayable,

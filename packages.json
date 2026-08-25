@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "repository": "github.com/faustbrian/go-sequencer",
+  "packages": [
+    {
+      "module_directory": ".",
+      "directory": ".",
+      "name": "sequencer",
+      "import_path": "github.com/faustbrian/go-sequencer",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "goidempotency",
+      "name": "goidempotency",
+      "import_path": "github.com/faustbrian/go-sequencer/goidempotency",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "golease",
+      "name": "golease",
+      "import_path": "github.com/faustbrian/go-sequencer/golease",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "goqueue",
+      "name": "goqueue",
+      "import_path": "github.com/faustbrian/go-sequencer/goqueue",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "goretry",
+      "name": "goretry",
+      "import_path": "github.com/faustbrian/go-sequencer/goretry",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "memory",
+      "name": "memory",
+      "import_path": "github.com/faustbrian/go-sequencer/memory",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "migrations",
+      "name": "migrations",
+      "import_path": "github.com/faustbrian/go-sequencer/migrations",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "postgres",
+      "name": "postgres",
+      "import_path": "github.com/faustbrian/go-sequencer/postgres",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "scheduler",
+      "name": "scheduler",
+      "import_path": "github.com/faustbrian/go-sequencer/scheduler",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "sequencehttp",
+      "name": "sequencehttp",
+      "import_path": "github.com/faustbrian/go-sequencer/sequencehttp",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "sequencertest",
+      "name": "sequencertest",
+      "import_path": "github.com/faustbrian/go-sequencer/sequencertest",
+      "kind": "test support",
+      "production": false,
+      "executable": true,
+      "coverage_required": false,
+      "build_required": true,
+      "build_tags": []
+    }
+  ]
+}

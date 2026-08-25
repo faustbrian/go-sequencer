@@ -1,0 +1,60 @@
+diff --git a/internal/engine/engine.go b/internal/engine/engine.go
+--- a/internal/engine/engine.go
++++ b/internal/engine/engine.go
+@@ -188,5 +188 @@
+-	var status mutator.Status
+-
+-	if mu.codeData.Cov.IsCovered(pos) {
+-		status = mutator.Runnable
+-	}
++	status := mutator.Runnable
+diff --git a/internal/engine/executor.go b/internal/engine/executor.go
+--- a/internal/engine/executor.go
++++ b/internal/engine/executor.go
+@@ -197,2 +196,0 @@
+-	cmd := m.execContext(ctx, "go", m.getTestArgs(pkg)...)
+-	cmd.Dir = m.mutant.Workdir()
+@@ -200 +198,8 @@
+-		cmd.Dir = rootDir
++		status := m.runTestCommand(
++			ctx,
++			m.mutant.Workdir(),
++			m.getTestArgsFor(pkg, false, false),
++		)
++		if status != mutator.Lived {
++			return status
++		}
+@@ -201,0 +207,16 @@
++
++	workingDir := m.mutant.Workdir()
++	if m.integrationMode {
++		workingDir = rootDir
++	}
++
++	return m.runTestCommand(ctx, workingDir, m.getTestArgs(pkg))
++}
++
++func (m *mutantExecutor) runTestCommand(
++	ctx context.Context,
++	workingDir string,
++	args []string,
++) mutator.Status {
++	cmd := m.execContext(ctx, "go", args...)
++	cmd.Dir = workingDir
+@@ -219,0 +241,7 @@
++	return m.getTestArgsFor(pkg, m.integrationMode, true)
++}
++
++func (m *mutantExecutor) getTestArgsFor(
++	pkg string,
++	integrationMode, includeBuildTags bool,
++) []string {
+@@ -221 +249 @@
+-	if m.buildTags != "" {
++	if includeBuildTags && m.buildTags != "" {
+@@ -231 +259 @@
+-		args = append(args, fmt.Sprintf("-cpu %d", m.testCPU))
++		args = append(args, "-cpu", fmt.Sprint(m.testCPU))
+@@ -235 +263 @@
+-	if m.integrationMode {
++	if integrationMode {

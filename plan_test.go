@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
+	sequencer "github.com/faustbrian/go-sequencer"
 )
 
 func TestCompilePlanUsesDeterministicTopologicalOrder(t *testing.T) {

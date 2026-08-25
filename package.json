@@ -1,0 +1,10 @@
+{
+  "name": "golib-documentation-tools",
+  "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "devDependencies": {
+    "cspell": "10.0.0"
+  }
+}

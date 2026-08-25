@@ -1,0 +1,1 @@
+pkg/merkle-patricia-trie/testdata/ethereum-tests/TrieTests/*.json whitespace=-trailing-space

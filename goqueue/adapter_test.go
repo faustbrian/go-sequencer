@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/goqueue"
-	"github.com/faustbrian/golib/pkg/sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/goqueue"
+	"github.com/faustbrian/go-sequencer/memory"
 )
 
 func TestDispatcherPublishesIdentityOnlyMessage(t *testing.T) {

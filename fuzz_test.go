@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	sequencer "github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/memory"
 )
 
 func FuzzCompilePlanDeterminism(fuzz *testing.F) {

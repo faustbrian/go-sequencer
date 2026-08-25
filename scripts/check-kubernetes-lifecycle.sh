@@ -8,7 +8,7 @@ readonly POSTGRES_IMAGE="postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42
 module_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repository_root="$(git -C "${module_directory}" rev-parse --show-toplevel)"
 source_revision="$(git -C "${module_directory}" rev-parse HEAD)"
-gate_input_sha256="$("${repository_root}/scripts/gate-input-digest.sh" interoperability pkg/sequencer)"
+gate_input_sha256="$("${repository_root}/scripts/gate-input-digest.sh" interoperability .)"
 started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/sequencer-kubernetes.XXXXXX")"
 cluster_name="sequencer-$$_${RANDOM}"
@@ -17,7 +17,7 @@ kubeconfig="${temporary}/kubeconfig"
 kind_binary="${temporary}/kind"
 gocache="${temporary}/gocache"
 image="sequencer-kubernetes:${cluster_name}"
-artifact_directory="${repository_root}/.artifacts/pkg/sequencer/kubernetes"
+artifact_directory="${repository_root}/.artifacts/kubernetes"
 cluster_created=0
 image_created=0
 port_forward_pid=""
@@ -306,7 +306,7 @@ wait_sql "SELECT checksum = 'sha256:kubernetes-v1' FROM sequencer_operations WHE
 wait_sql "SELECT checksum = 'sha256:kubernetes-v2' FROM sequencer_operations WHERE operation_id = 'kubernetes.lifecycle' AND version = 2"
 kube delete deployment registry-old --wait=true >/dev/null
 
-completed_gate_input_sha256="$("${repository_root}/scripts/gate-input-digest.sh" interoperability pkg/sequencer)"
+completed_gate_input_sha256="$("${repository_root}/scripts/gate-input-digest.sh" interoperability .)"
 if [[ "${completed_gate_input_sha256}" != "${gate_input_sha256}" ]]; then
     printf 'Kubernetes lifecycle gate inputs changed during execution\n' >&2
     exit 1

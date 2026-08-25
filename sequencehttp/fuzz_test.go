@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/faustbrian/golib/pkg/sequencer"
-	"github.com/faustbrian/golib/pkg/sequencer/sequencehttp"
+	"github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/sequencehttp"
 )
 
 func FuzzAdministrativeCommands(fuzz *testing.F) {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- Resolve Kubernetes lifecycle evidence through the repository-owned gate
+  digest helper instead of a removed monorepo-relative path.
+
 ### Changed
 
 - Exclude intentional nested modules from root local-proxy archives so local,

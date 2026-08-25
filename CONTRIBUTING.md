@@ -15,14 +15,16 @@ evidence and documentation. Specification behavior requires a decision record,
 fixture coverage, and interoperability evidence.
 
 New direct dependencies and dependency updates must follow the
-[dependency governance policy](docs/dependency-governance.md). Package-local
+[dependency governance policy](AGENTS.md#dependencies-and-supply-chain). Package-local
 update bots are forbidden; the root policy owns every module and action update.
 
 Specification-backed changes must follow the
-[specification governance contract](docs/specification-governance.md), update
+[specification governance contract](AGENTS.md#design), update
 the affected stable decision entries, and complete the Specification Decisions
 section of the pull request template. An unresolved interpretation or stale
 source pin is release-blocking; peer behavior cannot silently select policy.
+
+Required mutation gates must finish with zero surviving viable mutants.
 
 Do not add package-local workflows, permanent replacements, machine-specific
 paths, bypass flags, broad mutation exclusions, or aggregate quality metrics
@@ -34,14 +36,13 @@ Run during development:
 
 ```bash
 make inventory
-make specification-decisions
-make check MODULES=pkg/<library>
+make check
 ```
 
 Before submitting a repository-wide change:
 
 ```bash
-make ci-changed BASE=origin/main
+make ci
 ```
 
 The full scheduled and release gate is `make ci`. Report every unavailable or
@@ -49,7 +50,7 @@ failing command; do not describe partial results as release-ready.
 
 ## Adding A Module
 
-Follow [module lifecycle procedures](docs/module-lifecycle.md). New modules
+Follow [repository structure policy](AGENTS.md#repository-structure). New modules
 require an explicit purpose, ownership boundary, dependency review, package
 catalog entry, full quality gates, documentation, changelog, license, security
 policy, compatibility plan, and release dry-run.

@@ -8,10 +8,10 @@ fi
 
 root="$(git rev-parse --show-toplevel)"
 package_directory="$1"
+package_directory="${package_directory#./}"
 case "${package_directory}" in
-    pkg/*) ;;
-    *)
-        printf 'package directory must be beneath pkg/: %s\n' \
+    ""|/*|../*|*/../*|*/..)
+        printf 'package directory must be repository-relative: %s\n' \
             "${package_directory}" >&2
         exit 2
         ;;

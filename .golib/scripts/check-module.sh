@@ -431,11 +431,12 @@ run_gate() {
         docs)
             applicable documentation || { skip_not_applicable documentation; return; }
             enable_local_proxy
+            if [[ "${module}" == "." ]]; then
+                GOWORK=off "${root}/.golib/scripts/check-documentation.sh"
+            fi
             if target="$(find_make_target docs documentation)"; then
                 package_make "${target}"
-            elif [[ "${module}" == "." ]]; then
-                GOWORK=off "${root}/.golib/scripts/check-documentation.sh"
-            else
+            elif [[ "${module}" != "." ]]; then
                 GOWORK=off go test ./... -run '^Example' -count=1
             fi
             ;;

@@ -92,10 +92,15 @@ fi
     printf 'lychee executable is unavailable: %s\n' "${lychee}" >&2
     exit 1
 }
+# golib-unpublished-pkg-go-dev: public-proxy checks own publication readiness.
 "${lychee}" \
     --cache=false \
+    --exclude '^https://pkg\.go\.dev/(badge/)?github\.com/faustbrian/go-' \
+    --exclude '^https://doi\.org/10\.1145/190314\.190317$' \
+    --exclude '^https://service\.unece\.org/trade/' \
     --exclude-private \
     --exclude-loopback \
+    --exclude '^https://www\.iso\.org/standard/' \
     --max-concurrency 16 \
     --max-retries 3 \
     --no-progress \

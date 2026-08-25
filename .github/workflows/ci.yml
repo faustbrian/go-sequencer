@@ -168,9 +168,11 @@ jobs:
               '${{ matrix.directory }}'
           fi
       - name: Run strict module contract
+        id: strict_contract
         if: inputs.release_dry_run != true
         run: ./.golib/scripts/with-disposable-go-cache.sh ./.golib/scripts/run-modules.sh check --modules '${{ matrix.directory }}'
       - name: Run release dry-run
+        id: release_dry_run
         if: inputs.release_dry_run == true
         env:
           GOLIB_VERIFICATION_SNAPSHOT: '1'
@@ -186,9 +188,12 @@ jobs:
             --modules '${{ matrix.directory }}' 2>&1 | tee "${output}"
       - name: Stage attributable evidence
         if: always()
+        env:
+          CONTRACT_OUTCOME: ${{ inputs.release_dry_run == true && steps.release_dry_run.outcome || steps.strict_contract.outcome }}
         run: >-
           ./.golib/scripts/stage-ci-evidence.sh '${{ matrix.directory }}'
           '${{ format('{0}/golib-evidence-{1}', runner.temp, matrix.artifact) }}'
+          "${CONTRACT_OUTCOME}"
       - name: Upload attributable evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

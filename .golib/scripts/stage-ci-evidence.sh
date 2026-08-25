@@ -1,25 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    printf 'usage: %s <module-directory> <destination>\n' "$0" >&2
+if [[ $# -ne 3 ]]; then
+    printf 'usage: %s <module-directory> <destination> <outcome>\n' "$0" >&2
     exit 2
 fi
 
 root="${GOLIB_ROOT:-$(git rev-parse --show-toplevel)}"
 module="$1"
 destination="$2"
+outcome="$3"
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source="${root}/.artifacts"
 if [[ "${module}" != "." ]]; then
     source="${source}/${module}"
 fi
-
-[[ -d "${source}" && ! -L "${source}" ]] || {
-    printf 'attributable evidence is missing for %s\n' "${module}" >&2
+case "${outcome}" in
+    success|failure|cancelled|skipped) ;;
+    *)
+        printf 'invalid CI contract outcome for %s: %s\n' \
+            "${module}" "${outcome}" >&2
+        exit 2
+        ;;
+esac
+source_available=0
+if [[ -d "${source}" && ! -L "${source}" ]]; then
+    source="$(cd "${source}" && pwd -P)"
+    source_available=1
+elif [[ -e "${source}" || -L "${source}" ]]; then
+    printf 'invalid attributable evidence source for %s\n' "${module}" >&2
     exit 1
-}
-source="$(cd "${source}" && pwd -P)"
+fi
 destination_name="$(basename "${destination}")"
 destination_parent="$(cd "$(dirname "${destination}")" && pwd -P)" || {
     printf 'CI evidence destination parent is unavailable: %s\n' \
@@ -36,19 +47,23 @@ destination="${destination_parent}/${destination_name}"
         "${destination}" >&2
     exit 1
 }
-case "${destination}" in
-    "${source}"|"${source}"/*)
-        printf 'CI evidence destination must be outside its source: %s\n' \
-            "${destination}" >&2
-        exit 1
-        ;;
-esac
+if [[ "${source_available}" -eq 1 ]]; then
+    case "${destination}" in
+        "${source}"|"${source}"/*)
+            printf 'CI evidence destination must be outside its source: %s\n' \
+                "${destination}" >&2
+            exit 1
+            ;;
+    esac
+fi
 
 # Cancellation can bypass the mutation runner's signal trap. Reclaim only
 # scratch directories whose recorded owner process is demonstrably gone.
 # shellcheck disable=SC1091
 . "${script_directory}/internal/mutation-scratch.sh"
-mutation_scratch_recover_abandoned "${source}"
+if [[ "${source_available}" -eq 1 ]]; then
+    mutation_scratch_recover_abandoned "${source}"
+fi
 
 mkdir -p "${destination}"
 inventory="$(mktemp "${TMPDIR:-/tmp}/golib-ci-evidence.XXXXXXXX")"
@@ -69,15 +84,19 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 files=0
-find "${source}" -mindepth 1 \
-    \( -type d \( \
-        -name 'mutation-run-*' -o \
-        -name '*.go-cache-*' -o \
-        -name 'go-cache' -o \
-        -name '.locks' -o \
-        -name '*.lock' -o \
-        -name '*.tmp.*' \
-    \) -prune \) -o -print0 >"${inventory}"
+if [[ "${source_available}" -eq 1 ]]; then
+    find "${source}" -mindepth 1 \
+        \( -type d \( \
+            -name 'mutation-run-*' -o \
+            -name '*.go-cache-*' -o \
+            -name 'go-cache' -o \
+            -name '.locks' -o \
+            -name '*.lock' -o \
+            -name '*.tmp.*' \
+        \) -prune \) -o -print0 >"${inventory}"
+else
+    : >"${inventory}"
+fi
 while IFS= read -r -d '' candidate; do
     relative="${candidate#"${source}/"}"
     basename="${candidate##*/}"
@@ -104,9 +123,22 @@ while IFS= read -r -d '' candidate; do
     files=$((files + 1))
 done <"${inventory}"
 
-[[ "${files}" -gt 0 ]] || {
-    printf 'no durable attributable evidence exists for %s\n' "${module}" >&2
-    exit 1
-}
+jq -n \
+    --arg module "${module}" \
+    --arg outcome "${outcome}" \
+    --arg repository "${GITHUB_REPOSITORY:-}" \
+    --arg run_id "${GITHUB_RUN_ID:-}" \
+    --arg run_attempt "${GITHUB_RUN_ATTEMPT:-}" \
+    --arg revision "${GITHUB_SHA:-}" \
+    '{
+        schema_version: 1,
+        module: $module,
+        outcome: $outcome,
+        repository: $repository,
+        run_id: $run_id,
+        run_attempt: $run_attempt,
+        revision: $revision
+    }' >"${destination}/ci-result.json"
+files=$((files + 1))
 stage_complete=1
 printf '[%s] staged %d durable evidence files\n' "${module}" "${files}"

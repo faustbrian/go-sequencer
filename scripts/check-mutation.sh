@@ -2,4 +2,4 @@
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
-exec "${root}/scripts/check-mutation.sh" .
+exec "${root}/.golib/scripts/check-mutation.sh" .

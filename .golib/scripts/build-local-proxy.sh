@@ -154,8 +154,7 @@ while IFS=$'\t' read -r module_path module_directory; do
         fi
         printf '%s\0' "${relative}" >>"${archive_files}"
     done < <(
-        git -C "${root}" ls-files -z --cached --others --exclude-standard \
-            -- "${module_directory}"
+        git -C "${root}" ls-files -z --cached -- "${module_directory}"
     )
     (
         cd "${root}/${module_directory}"

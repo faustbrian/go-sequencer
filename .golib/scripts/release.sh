@@ -22,7 +22,8 @@ record="$(jq -ce --arg directory "${module}" \
     "${root}/modules.json")"
 module_path="$(jq -r '.module_path' <<<"${record}")"
 tag_prefix="$(jq -r '.tag_prefix' <<<"${record}")"
-tag="${tag_prefix}1.0.0"
+version="v$(jq -r '.version' <<<"${record}")"
+tag="${tag_prefix}${version#v}"
 directory="${root}/${module}"
 
 [[ "$(sed -n 's/^module[[:space:]]\+//p' "${directory}/go.mod")" == "${module_path}" ]]
@@ -45,14 +46,14 @@ trap cleanup EXIT HUP INT TERM
 
 if [[ "${public}" -eq 1 ]]; then
     GOPROXY="https://proxy.golang.org,direct" GOWORK=off \
-        go list -m "${module_path}@v1.0.0" >/dev/null
+        go list -m "${module_path}@${version}" >/dev/null
 else
     proxy="${task}/proxy"
     mkdir "${proxy}"
-    "${root}/.golib/scripts/build-local-proxy.sh" "${proxy}" v1.0.0
+    "${root}/.golib/scripts/build-local-proxy.sh" "${proxy}" "${version}"
     GOPROXY="file://${proxy},https://proxy.golang.org,direct" \
         GONOSUMDB="github.com/faustbrian/go-*" GOWORK=off \
-        go list -m "${module_path}@v1.0.0" >/dev/null
+        go list -m "${module_path}@${version}" >/dev/null
 fi
 
 printf 'release dry-run passed: %s %s\n' "${module_path}" "${tag}"

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       release_dry_run:
-        description: Run the v1.0.0 dry-run for every releasable module
+        description: Run the stable v1 dry-run for every releasable module
         required: false
         default: false
         type: boolean

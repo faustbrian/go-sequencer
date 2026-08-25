@@ -10,10 +10,5 @@ root="$(git rev-parse --show-toplevel)"
 module="$1"
 directory="${root}/${module}"
 
-if rg -n --glob '*.go' --glob '!**/*_test.go' \
-    '(^|[^[:alnum:]_])(unsafe\.|os\.Exit\(|log\.Fatal|http\.DefaultClient)' \
-    "${directory}"; then
-    printf 'forbidden unsafe or process-global production API detected\n' >&2
-    exit 1
-fi
+go run "${root}/.golib/scripts/check-go-safety.go" "${directory}"
 printf 'standalone safety policy passed for %s\n' "${module}"

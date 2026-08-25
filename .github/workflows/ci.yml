@@ -30,7 +30,7 @@ jobs:
     outputs:
       matrix: ${{ steps.selection.outputs.matrix }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Select repository modules
         id: selection
         env:
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - run: ./.golib/scripts/repository-check.sh
@@ -80,10 +80,10 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false
@@ -107,7 +107,7 @@ jobs:
           "${root}/rg" --version | grep -Eq "^ripgrep ${RIPGREP_VERSION}( |$)"
       - name: Set up Node
         if: github.repository == 'faustbrian/go-ecma-regexp' || github.repository == 'faustbrian/go-queue-control-plane'
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.4.1'
           package-manager-cache: false
@@ -196,7 +196,7 @@ jobs:
           "${CONTRACT_OUTCOME}"
       - name: Upload attributable evidence
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: evidence-${{ matrix.artifact }}
           path: ${{ format('{0}/golib-evidence-{1}', runner.temp, matrix.artifact) }}
@@ -213,10 +213,10 @@ jobs:
       packages: read
       security-events: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
           cache: false
@@ -238,12 +238,12 @@ jobs:
           tar --extract --gzip --file "${archive}" --directory "${proxy}"
           echo "GOPROXY=file://${proxy},https://proxy.golang.org,direct" >>"${GITHUB_ENV}"
           echo 'GONOSUMDB=github.com/faustbrian/go-*' >>"${GITHUB_ENV}"
-      - uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+      - uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           languages: go
           queries: security-extended,security-and-quality
       - run: ./.golib/scripts/with-disposable-go-cache.sh ./.golib/scripts/codeql-build.sh
-      - uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+      - uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
 
   required:
     name: Required

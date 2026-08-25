@@ -120,7 +120,10 @@ while IFS=$'\t' read -r module_path module_directory; do
     jq -r --arg current "${module_directory}" '
         .modules[]
         | .directory
-        | select(startswith($current + "/"))
+        | select(
+            ($current == "." and . != ".") or
+            ($current != "." and startswith($current + "/"))
+        )
     ' "${root}/modules.json" >"${nested_modules}"
 
     cp "${root}/${module_directory}/go.mod" \

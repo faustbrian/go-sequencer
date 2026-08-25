@@ -40,5 +40,7 @@ if grep -REnI \
     exit 1
 fi
 
+git -C "${root}" ls-files --error-unmatch package-lock.json >/dev/null
+
 git diff --check
 printf 'standalone repository contract passed\n'

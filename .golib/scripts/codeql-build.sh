@@ -8,6 +8,17 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+root_version="$(jq -er '
+    .modules[] | select(.directory == ".") | .version
+' "${root}/modules.json")"
+self_proxy="${task}/self-proxy"
+"${root}/.golib/scripts/build-local-proxy.sh" \
+    "${self_proxy}" "v${root_version}" "."
+upstream_proxy="${GOPROXY:-$(go env GOPROXY)}"
+export GOPROXY="file://${self_proxy},${upstream_proxy}"
+current_no_sum_db="$(go env GONOSUMDB)"
+export GONOSUMDB="github.com/faustbrian/go-*${current_no_sum_db:+,${current_no_sum_db}}"
+
 while IFS= read -r module; do
     [[ -n "${module}" ]] || continue
     module_root="${root}"

@@ -34,7 +34,7 @@ if grep -REnI \
     --exclude='go.sum' \
     --exclude='CHANGELOG.md' \
     --exclude='repository-check.sh' \
-    'github\.com/faustbrian/golib/pkg|/Users/[^/]+/Developer|\.\./go-' \
+    'github\.com/faustbrian/golib|/Users/[^/]+/Developer|\.\./go-' \
     "${root}"; then
     printf 'monorepo or sibling-checkout reference remains\n' >&2
     exit 1

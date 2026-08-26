@@ -125,7 +125,7 @@ refresh_owned_sums() {
     [[ -f go.sum ]] || return 0
     local temporary
     temporary="$(mktemp "${TMPDIR:-/tmp}/golib-go-sum.XXXXXX")"
-    awk '$1 !~ /^github\.com\/faustbrian\/golib\// { print }' \
+    awk '$1 !~ /^github\.com\/faustbrian\/go-/ { print }' \
         go.sum >"${temporary}"
     if cmp -s go.sum "${temporary}"; then
         rm -f "${temporary}"

@@ -8,8 +8,9 @@ readonly POSTGRES_IMAGE="postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42
 module_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repository_root="$(git -C "${module_directory}" rev-parse --show-toplevel)"
 source_revision="$(git -C "${module_directory}" rev-parse HEAD)"
-gate_input_sha256="$("${repository_root}/.golib/scripts/gate-input-digest.sh" interoperability .)"
 started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+initial_helper_sha256="$(shasum -a 256 "${module_directory}/kubernetes_lifecycle_helper_test.go" | awk '{print $1}')"
+initial_script_sha256="$(shasum -a 256 "${module_directory}/scripts/check-kubernetes-lifecycle.sh" | awk '{print $1}')"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/sequencer-kubernetes.XXXXXX")"
 cluster_name="sequencer-$$_${RANDOM}"
 cluster_name="${cluster_name//_/-}"
@@ -306,23 +307,24 @@ wait_sql "SELECT checksum = 'sha256:kubernetes-v1' FROM sequencer_operations WHE
 wait_sql "SELECT checksum = 'sha256:kubernetes-v2' FROM sequencer_operations WHERE operation_id = 'kubernetes.lifecycle' AND version = 2"
 kube delete deployment registry-old --wait=true >/dev/null
 
-completed_gate_input_sha256="$("${repository_root}/.golib/scripts/gate-input-digest.sh" interoperability .)"
-if [[ "${completed_gate_input_sha256}" != "${gate_input_sha256}" ]]; then
-    printf 'Kubernetes lifecycle gate inputs changed during execution\n' >&2
-    exit 1
-fi
-
 mkdir -p "${artifact_directory}"
 report_temporary="$(mktemp "${artifact_directory}/.report.XXXXXX")"
 helper_sha256="$(shasum -a 256 "${module_directory}/kubernetes_lifecycle_helper_test.go" | awk '{print $1}')"
 script_sha256="$(shasum -a 256 "${module_directory}/scripts/check-kubernetes-lifecycle.sh" | awk '{print $1}')"
+[[ "${helper_sha256}" == "${initial_helper_sha256}" ]] || {
+    printf 'Kubernetes lifecycle helper changed during execution\n' >&2
+    exit 1
+}
+[[ "${script_sha256}" == "${initial_script_sha256}" ]] || {
+    printf 'Kubernetes lifecycle script changed during execution\n' >&2
+    exit 1
+}
 image_id="$(docker image inspect "${image}" --format '{{.Id}}')"
 kubernetes_version="$(kube version -o json | jq -r '.serverVersion.gitVersion')"
 jq -n \
-    --arg schema 'sequencer-kubernetes-lifecycle/v2' \
+    --arg schema 'sequencer-kubernetes-lifecycle/v3' \
     --arg result passed \
     --arg source_revision "${source_revision}" \
-    --arg gate_input_sha256 "${gate_input_sha256}" \
     --arg helper_sha256 "${helper_sha256}" \
     --arg script_sha256 "${script_sha256}" \
     --arg kind_version "${KIND_VERSION}" \
@@ -337,7 +339,6 @@ jq -n \
       result: $result,
       source_revision: $source_revision,
       input_sha256: {
-        gate: $gate_input_sha256,
         helper: $helper_sha256,
         script: $script_sha256
       },

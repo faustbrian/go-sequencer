@@ -14,10 +14,10 @@ at 1,024. Renewal must precede lease expiry; measure database latency and leave
 margin for failover. Shutdown is capped at 30 minutes, while each operation's
 finite attempts and timeout bound retry and compensation work.
 
-Run `make benchmark` on release hardware. Record Go version, CPU, database
-version, candidate count, dependency shape, concurrency, renewal, and recovery
-latency under replica contention. Benchmarks are capacity evidence, not
-universal service-level objectives.
+Run `make check` on release hardware. The benchmark gate is part of that
+contract. Record Go version, CPU, database version, candidate count, dependency
+shape, concurrency, renewal, and recovery latency under replica contention.
+Benchmarks are capacity evidence, not universal service-level objectives.
 
 ## Reproducible workloads
 

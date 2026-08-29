@@ -1,0 +1,88 @@
+schema_version: 1
+tool_version: v1.0.5
+tool_checksums_sha256: 7ee6c6c9bccd76cc1071fb891073055d393701abaed047e0357370f128ba771b
+
+manifest:
+  modules: modules.json
+  packages: packages.json
+
+evidence:
+  root: .verification
+
+mutation:
+  root: .verification/mutation
+  imports:
+    - module: .
+      archive: .verification/mutation/bootstrap/root.zip
+      ledger: .verification/mutation/migration-ledger.json
+
+api:
+  baselines:
+    - module: .
+      mode: apidiff
+      path: api/baseline.txt
+
+operations:
+  - module: .
+    gate: docs
+    steps:
+      - type: make
+        makefile: verification/package.mk
+        target: docs
+        timeout: 20m
+  - module: .
+    gate: fuzz
+    steps:
+      - type: go-test
+        packages: ["."]
+        fuzz: '^FuzzCompilePlanDeterminism$'
+        budget: 10000x
+        timeout: 20m
+      - type: go-test
+        packages: ["."]
+        fuzz: '^FuzzOperationDefinitionBoundaries$'
+        budget: 10000x
+        timeout: 20m
+      - type: go-test
+        packages: ["."]
+        fuzz: '^FuzzSanitizePersistenceText$'
+        budget: 10000x
+        timeout: 20m
+      - type: go-test
+        packages: ["."]
+        fuzz: '^FuzzMixedBinaryClaimsNeverCrossLocalVersion$'
+        budget: 10000x
+        timeout: 20m
+      - type: go-test
+        packages: ["./goqueue"]
+        fuzz: '^FuzzQueueMessageJSONValidation$'
+        budget: 10000x
+        timeout: 20m
+      - type: go-test
+        packages: ["./postgres"]
+        fuzz: '^FuzzPersistedAttemptStateErrorAndOutput$'
+        budget: 10000x
+        timeout: 20m
+      - type: go-test
+        packages: ["./postgres"]
+        fuzz: '^FuzzPersistedDependencyRefs$'
+        budget: 10000x
+        timeout: 20m
+      - type: go-test
+        packages: ["./postgres"]
+        fuzz: '^FuzzPersistedCompensationRef$'
+        budget: 10000x
+        timeout: 20m
+      - type: go-test
+        packages: ["./sequencehttp"]
+        fuzz: '^FuzzAdministrativeCommands$'
+        budget: 10000x
+        timeout: 20m
+  - module: .
+    gate: benchmark
+    steps:
+      - type: go-test
+        packages: ["./..."]
+        benchmark: "."
+        budget: 100ms
+        timeout: 20m

@@ -1,4 +1,4 @@
-title = "golib secret scanning"
+title = "sequencer secret scanning"
 
 [extend]
 useDefault = true

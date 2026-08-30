@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Adopt the checksum-verified `go-library-tools` v1.0.5 repository contract,
+- Adopt the checksum-verified `go-library-tools` v1.0.13 repository contract,
   preserving package-owned verification policy, fixtures, API baselines, and
   mutation checkpoint imports while removing duplicated tooling.
 

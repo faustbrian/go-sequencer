@@ -4,9 +4,16 @@
 
 ### Changed
 
-- Adopt the checksum-verified `go-library-tools` v1.0.5 repository contract,
+- Adopt schema-v2 cohesion metadata and a local cohesion gate for the public
+  module, backed by the checksum-verified `go-library-tools` v1.3.0 release.
+- Adopt the checksum-verified `go-library-tools` v1.3.0 repository contract,
   preserving package-owned verification policy, fixtures, API baselines, and
   mutation checkpoint imports while removing duplicated tooling.
+
+### Documentation
+
+- Link the module to the immutable v1.3.0 Golib ecosystem and package-family
+  guidance.
 
 ## 1.0.0 - 2026-08-25
 

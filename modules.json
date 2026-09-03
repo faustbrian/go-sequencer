@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repository": "github.com/faustbrian/go-sequencer",
   "go_version": "1.26.6",
   "modules": [
@@ -340,6 +340,114 @@
         "race": true,
         "security": true,
         "tests": true
+      },
+      "cohesion": {
+        "family": "persistence-and-durability",
+        "secondary_capabilities": [
+          "administration-and-control",
+          "database-and-storage",
+          "distributed-coordination",
+          "eventing-and-messaging",
+          "http-and-service-edge",
+          "observability",
+          "resilience-and-admission",
+          "scheduling-and-orchestration",
+          "testing-and-conformance",
+          "transport-and-networking"
+        ],
+        "responsibility": "Provide dependency-ordered durable operation execution with immutable plans, fenced attempts, explicit retry and unknown-outcome policy, bounded fleet lifecycle, persistent stores, and selectable integration adapters.",
+        "non_goals": [
+          "Own application operations, business transactions, external side effects, process signals, queue settlement, database pools, credentials, or observability backends.",
+          "Replace schema migrations, recurring time-based scheduling, workflow engines, queues, leases, retries, or idempotency packages that own those reusable domain contracts."
+        ],
+        "public_package_identifier": "sequencer",
+        "primary_entry_packages": [
+          "github.com/faustbrian/go-sequencer"
+        ],
+        "package_selection": {
+          "github.com/faustbrian/go-sequencer": "Use for immutable dependency plans, fenced durable attempts, synchronous runners, leaderless fleet execution, explicit retry ownership, and unknown-outcome reconciliation.",
+          "github.com/faustbrian/go-sequencer/goidempotency": "Use to adapt an application idempotency gate to sequencer attempt execution with bounded terminal cleanup.",
+          "github.com/faustbrian/go-sequencer/golease": "Use to adapt an external fenced lease acquirer to sequencer execution with bounded release cleanup.",
+          "github.com/faustbrian/go-sequencer/goqueue": "Use to publish sequencer requests or execute delivered requests with explicit acknowledgement and rejection settlement.",
+          "github.com/faustbrian/go-sequencer/goretry": "Use for inline retry classification and execution against the shared sequencer attempt budget.",
+          "github.com/faustbrian/go-sequencer/memory": "Use for deterministic process-local store, lease, and queue behavior where restart durability is unnecessary.",
+          "github.com/faustbrian/go-sequencer/migrations": "Use to assert application schema-version prerequisites without making sequencer own migration history.",
+          "github.com/faustbrian/go-sequencer/postgres": "Use for durable fenced sequencer state backed by a caller-owned PostgreSQL pool.",
+          "github.com/faustbrian/go-sequencer/scheduler": "Use to translate an external scheduling destination into sequencer operation requests.",
+          "github.com/faustbrian/go-sequencer/sequencehttp": "Use to expose bounded inspection, reset, and reconciliation controls behind a caller-supplied authorizer.",
+          "github.com/faustbrian/go-sequencer/sequencertest": "Use in tests for deterministic clocks, operation fixtures, and fault-injecting store behavior."
+        },
+        "lifecycle_status": "active",
+        "maturity": "stable",
+        "construction_styles": [
+          "builder-compile",
+          "new-options",
+          "plain-function",
+          "validated-value"
+        ],
+        "lifecycle_styles": [
+          "run",
+          "stateless"
+        ],
+        "ownership": {
+          "configuration": "caller",
+          "mutable_inputs": [
+            "borrow",
+            "copy"
+          ],
+          "runtime_resources": "caller",
+          "background_work": "package"
+        },
+        "optional_owned_dependencies": [],
+        "adapters": [
+          "github.com/faustbrian/go-sequencer/goidempotency",
+          "github.com/faustbrian/go-sequencer/golease",
+          "github.com/faustbrian/go-sequencer/goqueue",
+          "github.com/faustbrian/go-sequencer/goretry",
+          "github.com/faustbrian/go-sequencer/memory",
+          "github.com/faustbrian/go-sequencer/postgres",
+          "github.com/faustbrian/go-sequencer/scheduler",
+          "github.com/faustbrian/go-sequencer/sequencehttp"
+        ],
+        "companions": [
+          "github.com/faustbrian/go-sequencer/migrations",
+          "github.com/faustbrian/go-sequencer/sequencertest"
+        ],
+        "supported_go": {
+          "minimum": "1.26.6",
+          "tested": [
+            "1.26.6"
+          ]
+        },
+        "supported_platforms": [
+          "portable-go"
+        ],
+        "supported_backends": [
+          "memory",
+          "postgresql"
+        ],
+        "supported_protocols": [
+          "http"
+        ],
+        "documentation": {
+          "readme": "README.md",
+          "api": "docs/api.md",
+          "adoption": "docs/quickstart.md",
+          "security": "docs/security.md",
+          "compatibility": "docs/compatibility.md",
+          "performance": "docs/performance.md",
+          "examples": "docs/cookbook.md",
+          "faq": "docs/faq.md",
+          "changelog": "CHANGELOG.md",
+          "pkg_go_dev": "https://pkg.go.dev/github.com/faustbrian/go-sequencer",
+          "ecosystem_index": "https://github.com/faustbrian/go-library-tools/blob/v1.3.0/docs/ecosystem/README.md"
+        },
+        "known_good_compatibility_sets": [],
+        "delivery": {
+          "implementation": "not-started",
+          "hardening": "not-started",
+          "release": "not-started"
+        }
       }
     }
   ]

@@ -14,6 +14,16 @@ bytes; tag and environment collections are each limited to 64 entries.
 cycles, and resource-limit violations. `Plan.IDs`, `Plan.Operations`, and
 `Plan.Operation` return defensive copies in deterministic order.
 
+`NewRunner` and `NewFleet` retain borrowed references to the compiled plan,
+store, clock, transaction manager, approver, operation handlers, conditions,
+and observers for the lifetime of the returned runner or fleet. Callers own
+those collaborators and their cleanup, must keep them valid while `Execute`
+or `Run` is active, and must synchronize any mutable collaborator state for
+every documented concurrent call. In particular, a fleet may invoke handlers
+and observers concurrently. Construction defensively copies operation
+definitions and the channels and observers slices, so later mutation of those
+caller-owned slices does not change the compiled plan or runner configuration.
+
 `Store` is the root durability contract. Registration fails on checksum drift.
 Claims include owner and fencing proof. Every mutation after claim requires
 that proof. `Completion.From` selects the fenced source state and defaults to

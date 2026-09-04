@@ -51,8 +51,8 @@ Start with the [quickstart](docs/quickstart.md), then read the
 the [fleet operation contract](docs/kubernetes.md). All documentation is indexed in
 [docs/README.md](docs/README.md).
 
-The versioned [Golib ecosystem index](https://github.com/faustbrian/go-library-tools/blob/v1.3.0/docs/ecosystem/README.md)
-and [package-family selection guidance](https://github.com/faustbrian/go-library-tools/blob/v1.3.0/docs/ecosystem/design-language.md#package-families-and-selection)
+The versioned [Golib ecosystem index](https://github.com/faustbrian/go-library-tools/blob/v1.4.0/docs/ecosystem/README.md)
+and [Persistence and durability family](https://github.com/faustbrian/go-library-tools/blob/v1.4.0/docs/ecosystem/design-language.md#package-families-and-selection)
 describe the shared design language, related packages, and composition rules.
 
 Requires Go 1.26.6. Run `make check` for the complete local gate.

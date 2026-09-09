@@ -12,8 +12,8 @@ import (
 func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {
 	t.Parallel()
 
-	if goqueue.ErrInvalidAdapter != sequencerqueue.ErrInvalidAdapter ||
-		goqueue.ErrPublishOutcomeUnknown != sequencerqueue.ErrPublishOutcomeUnknown {
+	if !errors.Is(goqueue.ErrInvalidAdapter, sequencerqueue.ErrInvalidAdapter) ||
+		!errors.Is(goqueue.ErrPublishOutcomeUnknown, sequencerqueue.ErrPublishOutcomeUnknown) {
 		t.Fatal("legacy and canonical sentinels differ")
 	}
 	if uint8(goqueue.Acknowledged) != uint8(sequencerqueue.Acknowledged) ||

@@ -10,9 +10,9 @@ import (
 	"time"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/goidempotency"
-	"github.com/faustbrian/go-sequencer/goqueue"
-	"github.com/faustbrian/go-sequencer/goretry"
+	goidempotency "github.com/faustbrian/go-sequencer/adapters/idempotency"
+	goqueue "github.com/faustbrian/go-sequencer/adapters/queue"
+	goretry "github.com/faustbrian/go-sequencer/adapters/retry"
 	"github.com/faustbrian/go-sequencer/memory"
 )
 

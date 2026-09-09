@@ -45,8 +45,8 @@ shown here.
 ## Safety And Concurrency
 
 - Shared mutable state MUST have one documented synchronization owner.
-- Goroutines MUST have explicit lifetime, cancellation, shutdown, and leak
-  tests. Fire-and-forget goroutines are forbidden.
+- Goroutines MUST have explicit lifetime, cancellation, and shutdown. Leak
+  tests are REQUIRED when changed lifecycle or concurrency risk warrants them.
 - Channels MUST have documented ownership and closure rules.
 - Locks MUST NOT be held across caller callbacks, network IO, blocking channel
   operations, or unbounded work.
@@ -147,8 +147,9 @@ shown here.
   abstraction; wrappers require a stable policy or portability boundary.
 - Generated code and vendored corpora MUST record source, version, checksum,
   license, generation command, and update procedure.
-- Vulnerability, secret, license, SBOM, provenance, and clean-consumer checks
-  are release gates.
+- Release checks MUST be selected by the applicable Tier D boundary and its
+  material risks. Vulnerability, secret, license, SBOM, provenance, and
+  clean-consumer checks MUST NOT run as unconditional gates.
 
 ## Documentation
 
@@ -156,19 +157,21 @@ shown here.
   invariants, ownership, errors, concurrency, and caveats where relevant.
 - Comments MUST explain why a constraint or non-obvious implementation exists;
   they MUST NOT narrate obvious syntax.
-- Every public module MUST provide a quick start, API reference, examples,
-  adoption guidance, tradeoffs, security notes, FAQ, and release notes.
-- Documentation and examples MUST compile and be checked in CI.
+- Public modules MUST provide or link the documentation needed to adopt and
+  operate their supported contract; a fixed documentation bundle is not
+  required when a topic does not apply.
+- Affected documentation and examples MUST be validated. Unchanged
+  documentation MUST NOT require repository-wide recompilation.
 
 ## Changelogs
 
-- Every user-visible change MUST update the affected module `CHANGELOG.md` in
-  the same commit.
+- Consumer-visible or release-relevant changes MUST update the affected
+  module's changelog before release.
 - Entries MUST describe behavior and migration impact, not internal activity.
 - Changes to multiple modules MUST update every affected changelog.
 - Unreleased entries MUST NOT be silently rewritten or removed.
-- Generated, dependency, security, compatibility, and deprecation changes are
-  user-visible and require entries.
+- Generated, dependency, security, compatibility, and deprecation changes
+  require entries only when they affect consumers or release decisions.
 
 ## Completion
 

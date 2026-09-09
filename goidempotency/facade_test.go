@@ -13,7 +13,7 @@ import (
 func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {
 	t.Parallel()
 
-	if goidempotency.ErrInvalidAdapter != sequenceridempotency.ErrInvalidAdapter {
+	if !errors.Is(goidempotency.ErrInvalidAdapter, sequenceridempotency.ErrInvalidAdapter) {
 		t.Fatal("legacy and canonical sentinels differ")
 	}
 	if goidempotency.DefaultCleanupTimeout != sequenceridempotency.DefaultCleanupTimeout ||

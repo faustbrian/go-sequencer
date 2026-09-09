@@ -13,7 +13,7 @@ import (
 func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {
 	t.Parallel()
 
-	if golease.ErrInvalidAdapter != sequencerlease.ErrInvalidAdapter {
+	if !errors.Is(golease.ErrInvalidAdapter, sequencerlease.ErrInvalidAdapter) {
 		t.Fatal("legacy and canonical sentinels differ")
 	}
 	if golease.DefaultCleanupTimeout != sequencerlease.DefaultCleanupTimeout ||

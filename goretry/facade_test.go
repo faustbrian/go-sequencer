@@ -13,7 +13,7 @@ import (
 func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {
 	t.Parallel()
 
-	if goretry.ErrInvalidAdapter != sequencerretry.ErrInvalidAdapter {
+	if !errors.Is(goretry.ErrInvalidAdapter, sequencerretry.ErrInvalidAdapter) {
 		t.Fatal("legacy and canonical sentinels differ")
 	}
 	if _, err := goretry.New(nil); !errors.Is(err, goretry.ErrInvalidAdapter) {

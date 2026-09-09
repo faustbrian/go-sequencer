@@ -2,7 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- Add canonical `adapters/idempotency`, `adapters/lease`, `adapters/queue`,
+  and `adapters/retry` package paths while retaining the released imports as
+  compatibility facades.
+
 ### Changed
+
+- Adopt the checksum-verified `go-library-tools` v1.6.2 contract and immutable
+  reusable workflow.
+- Replace universal coverage and mutation mandates with risk-classified,
+  proportional assurance for repository changes and releases.
 
 - Advance shared tooling and required CI enforcement to the immutable
   `go-library-tools` v1.4.0 release and its checksum-verified contract, and

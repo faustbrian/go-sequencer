@@ -4,6 +4,54 @@
   "packages": [
     {
       "module_directory": ".",
+      "directory": "adapters/idempotency",
+      "name": "sequenceridempotency",
+      "import_path": "github.com/faustbrian/go-sequencer/adapters/idempotency",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "adapters/lease",
+      "name": "sequencerlease",
+      "import_path": "github.com/faustbrian/go-sequencer/adapters/lease",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "adapters/queue",
+      "name": "sequencerqueue",
+      "import_path": "github.com/faustbrian/go-sequencer/adapters/queue",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
+      "directory": "adapters/retry",
+      "name": "sequencerretry",
+      "import_path": "github.com/faustbrian/go-sequencer/adapters/retry",
+      "kind": "public",
+      "production": true,
+      "executable": true,
+      "coverage_required": true,
+      "build_required": true,
+      "build_tags": []
+    },
+    {
+      "module_directory": ".",
       "directory": ".",
       "name": "sequencer",
       "import_path": "github.com/faustbrian/go-sequencer",

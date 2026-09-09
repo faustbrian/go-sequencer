@@ -1,4 +1,4 @@
-package goretry_test
+package sequencerretry_test
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/goretry"
+	goretry "github.com/faustbrian/go-sequencer/adapters/retry"
 )
 
 func TestClassifierMapsSequencerRetryability(t *testing.T) {

@@ -7,8 +7,9 @@ it is not an automatic retry.
 
 `UnknownOutcomeReplayIdempotent` explicitly asserts that a durable application
 idempotency boundary protects the effect. Only that policy lets lease recovery
-audit `indeterminate -> eligible` automatically. `goidempotency` provides an
-integration seam; it does not make arbitrary side effects idempotent.
+audit `indeterminate -> eligible` automatically. `adapters/idempotency`
+provides an integration seam; it does not make arbitrary side effects
+idempotent.
 
 Otherwise inspect the external effect and call `ResolveUnknown` through a
 `ReconciliationStore`. The request binds the operation version, exact attempt
@@ -22,9 +23,10 @@ Stale owners cannot complete or reset current work. PostgreSQL claim selection
 uses row locking with `SKIP LOCKED`, server time, and transactional projection,
 attempt, and audit writes.
 
-`goidempotency` terminal updates and `golease` releases detach from caller
-cancellation so accepted cleanup still runs, but every call retains an explicit
-deadline. `New` uses a five-second bound; `NewWithCleanupTimeout` accepts a
+`adapters/idempotency` terminal updates and `adapters/lease` releases detach
+from caller cancellation so accepted cleanup still runs, but every call
+retains an explicit deadline. `New` uses a five-second bound;
+`NewWithCleanupTimeout` accepts a
 positive bound up to one minute. Cleanup failures retain their underlying cause
 and any primary execution failure, but also carry `ErrUnknownResult`; callers
 must not authorize replay from an unconfirmed idempotency update or lease

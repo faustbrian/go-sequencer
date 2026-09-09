@@ -13,7 +13,7 @@ condition. Do not let the handler run schema migrations.
 
 ## Asynchronous batch
 
-Dispatch an identity-only `goqueue.Message`. In the worker, reload the
+Dispatch an identity-only `adapters/queue.Message`. In the worker, reload the
 definition by ID and version, verify checksum, claim the attempt, and use an
 idempotency key derived from operation ID, version, and attempt semantics.
 

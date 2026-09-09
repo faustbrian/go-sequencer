@@ -22,8 +22,8 @@ An unknown-outcome replay claim beyond `MaxAttempts` is durably failed with
 Select exactly one retry owner. `DurableRetries` is the default and creates a
 new fenced ledger attempt for each typed `sequencer.Retry`. It does not expose
 an inline execution budget. `InlineRetries` creates one durable attempt and
-supplies `Attempt.Budget`; `goretry.Adapter` consumes that shared budget before
-every callback. It cannot exceed the declared maximum even if an external
+supplies `Attempt.Budget`; `adapters/retry.Adapter` consumes that shared budget
+before every callback. It cannot exceed the declared maximum even if an external
 policy asks for more calls. A policy that launches hedges must reserve every
 original, retry, and hedge callback from this same budget; a hedge is not a new
 allowance. Do not construct a second independent retry or hedge loop.

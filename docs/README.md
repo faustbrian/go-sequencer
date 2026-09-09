@@ -19,3 +19,7 @@
 - [Cookbook](cookbook.md)
 - [FAQ](faq.md)
 - [Compatibility](compatibility.md)
+
+The repository [README](../README.md#packages) maps every public package and
+explains when to choose Sequencer instead of Scheduler. Start with the
+self-contained quick start before selecting production stores or adapters.

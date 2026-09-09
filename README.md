@@ -19,31 +19,72 @@ The root module contains no global registry, reflection discovery, filesystem
 scan, hidden worker, or implicit goroutine. Applications construct operations,
 stores, runners, transport adapters, authentication, and dependencies.
 
-```go
-operation := sequencer.OperationSpec{
-    ID: "postal.normalize-postcodes", Version: 1,
-    Checksum: "sha256:reviewed-source-checksum",
-    Description: "Normalize stored postcode spelling", Channel: "deploy",
-    Policy: sequencer.Policy{
-        Mode: sequencer.OneTime, MaxAttempts: 3, MaxExceptions: 3,
-        Timeout: time.Minute,
-    },
-    Handler: sequencer.HandlerFunc(func(ctx context.Context, attempt sequencer.Attempt) (sequencer.Output, error) {
-        return sequencer.Output{Summary: "normalized postcodes"}, nil
-    }),
-}
-plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{operation}, sequencer.PlanOptions{})
-if err != nil { /* fail deployment */ }
-runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: replicaID})
-if err != nil { /* fail deployment */ }
-report, err := runner.Execute(ctx)
+The module follows stable v1 compatibility and requires Go 1.26.6 or later.
+
+## Install
+
+```sh
+go get github.com/faustbrian/go-sequencer
 ```
 
-PostgreSQL is the production reference store. `memory` is a deterministic
-reference adapter. `goqueue`, `scheduler`, `goretry`, `golease`, and
-`goidempotency` are explicit integration seams. `migrations` asserts schema
-prerequisites without owning migration history. `sequencehttp` requires an
-application authorizer for every administrative action.
+## Five-minute quick start
+
+The [standalone quick start](docs/quickstart.md) is a complete program using the
+deterministic in-memory store. It compiles an immutable plan, runs one fenced
+operation under a deadline, checks every error, and prints the execution result.
+
+## Choose Sequencer or Scheduler
+
+Use Sequencer for dependency-ordered, versioned, and checksummed application
+operations that need a durable attempt ledger, fenced ownership, explicit
+replay, and unknown-outcome reconciliation. It is intended for one-time and
+explicitly repeated work, not recurring wall-clock decisions.
+
+Use [Scheduler](https://github.com/faustbrian/go-scheduler) for recurring cron
+or calendar decisions and coordinated dispatch across service replicas.
+Applications that need both keep time selection in Scheduler and durable
+operation execution in Sequencer; neither package hides the other behind a
+global runtime.
+
+## Packages
+
+| Package | Use it for |
+| --- | --- |
+| `sequencer` | Immutable dependency plans, fenced durable attempts, synchronous runs, fleet execution, and reconciliation |
+| `memory` | Deterministic process-local storage, leases, and queues for tests or non-durable work |
+| `postgres` | Durable fenced state using a caller-owned PostgreSQL pool |
+| `migrations` | Checking application-owned schema migration prerequisites |
+| `scheduler` | Sending absolute future-eligibility requests to an application-owned scheduler |
+| `goqueue` | Publishing or consuming identity-only operation requests with explicit settlement |
+| `goidempotency` | Protecting explicitly idempotent handlers through an application-owned durable gate |
+| `golease` | Scoping singleton work to a caller-supplied fenced lease |
+| `goretry` | Running bounded inline retries against the shared attempt budget |
+| `sequencehttp` | Authorized inspection, reset, and reconciliation HTTP controls |
+| `sequencertest` | Deterministic clocks, operation fixtures, and fault-injecting test stores |
+
+PostgreSQL is the production reference store. The current integration paths
+are explicit seams; applications still own database pools, queue settlement,
+scheduler destinations, credentials, telemetry backends, and external side
+effects.
+
+## Lifecycle, ownership, and failures
+
+`CompilePlan` validates and freezes definitions before work starts. `Runner`
+executes synchronously. `Fleet` owns its bounded polling and lease-renewal
+goroutines; cancel its `Run` context to begin draining and let the configured
+shutdown wait bound graceful draining and the `Run` call. An uncooperative
+drain-only handler may continue after that timeout until the process manager
+terminates it. Constructors borrow stores and other injected collaborators, so
+callers must keep them valid, synchronize mutable state, and close owned
+resources after execution has stopped.
+
+Handlers receive a context and a fenced attempt. Typed failures preserve their
+in-process causes, while only redaction-safe classifications enter durable
+records. Cancellation or lease expiry can make an external result
+indeterminate; inspect and reconcile that exact attempt instead of assuming it
+failed and replaying it. See the [lifecycle](docs/lifecycle.md),
+[recovery](docs/recovery.md), and [security](docs/security.md) contracts before
+production adoption.
 
 Start with the [quickstart](docs/quickstart.md), then read the
 [lifecycle](docs/lifecycle.md), [transaction](docs/transactions.md), and
@@ -55,4 +96,10 @@ The versioned [Golib ecosystem index](https://github.com/faustbrian/go-library-t
 and [Persistence and durability family](https://github.com/faustbrian/go-library-tools/blob/v1.4.0/docs/ecosystem/design-language.md#package-families-and-selection)
 describe the shared design language, related packages, and composition rules.
 
-Requires Go 1.26.6. Run `make check` for the complete local gate.
+The [API guide](docs/api.md), [cookbook](docs/cookbook.md),
+[`sequencertest`](https://pkg.go.dev/github.com/faustbrian/go-sequencer/sequencertest),
+[FAQ](docs/faq.md), [operations guide](docs/operations.md),
+[compatibility notes](docs/compatibility.md), [changelog](CHANGELOG.md),
+[support policy](SUPPORT.md), [security policy](SECURITY.md), and
+[license](LICENSE) complete the adoption and support surface. Run `make check`
+for the complete local gate.

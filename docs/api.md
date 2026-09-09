@@ -74,6 +74,11 @@ Typed constructors classify permanent, retryable, skipped, blocked,
 unknown-result, and rollback failures while preserving the in-process cause.
 Only redaction-safe classifications are persisted by the runner.
 
+Target-oriented integrations live at `adapters/idempotency`,
+`adapters/lease`, `adapters/queue`, and `adapters/retry`. The released
+`goidempotency`, `golease`, `goqueue`, and `goretry` imports delegate to those
+canonical packages without changing their public contracts.
+
 `sequencehttp` requires an application authorizer to return the stable,
 non-empty principal authorized for each action and operation resource. The
 bounded `POST /operations/{id}/reconcile` control accepts version, attempt,

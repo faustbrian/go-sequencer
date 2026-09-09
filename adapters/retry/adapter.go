@@ -1,19 +1,16 @@
-// Package goretry provides the retained Sequencer retry adapter.
-//
-// Deprecated: use github.com/faustbrian/go-sequencer/adapters/retry. This
-// package remains supported for the longer of 180 days after successor public
-// availability and two subsequently published stable minor releases.
-package goretry
+// Package sequencerretry maps typed sequencer failures to a bounded retry policy such
+// as retry while leaving durable attempt ownership with the sequencer.
+package sequencerretry
 
 import (
 	"context"
+	"errors"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-	adapter "github.com/faustbrian/go-sequencer/adapters/retry"
 )
 
 // ErrInvalidAdapter reports a missing bounded retry policy.
-var ErrInvalidAdapter = adapter.ErrInvalidAdapter
+var ErrInvalidAdapter = errors.New("sequencer/goretry: invalid adapter")
 
 // Classification is the transport-neutral retry decision.
 type Classification uint8
@@ -30,7 +27,10 @@ type Classifier struct{}
 
 // Classify returns retryable only for an explicit sequencer retry error.
 func (Classifier) Classify(err error) Classification {
-	return Classification(adapter.Classifier{}.Classify(err))
+	if errors.Is(err, sequencer.ErrRetryable) {
+		return Retryable
+	}
+	return Permanent
 }
 
 // Policy executes a callback under explicit attempt and time budgets.
@@ -39,18 +39,26 @@ type Policy interface {
 }
 
 // Adapter delegates in-attempt transient retries to an external policy.
-type Adapter struct{ inner *adapter.Adapter }
+type Adapter struct{ policy Policy }
 
 // New validates the bounded retry policy.
 func New(policy Policy) (*Adapter, error) {
-	inner, err := adapter.New(policy)
-	if err != nil {
-		return nil, err
+	if policy == nil {
+		return nil, ErrInvalidAdapter
 	}
-	return &Adapter{inner: inner}, nil
+	return &Adapter{policy: policy}, nil
 }
 
-// Do executes through the configured policy and shared execution budget.
+// Do executes through the configured policy while every callback invocation
+// consumes the caller's shared execution budget.
 func (adapter *Adapter) Do(ctx context.Context, budget *sequencer.ExecutionBudget, operation func(context.Context) error) error {
-	return adapter.inner.Do(ctx, budget, operation)
+	if budget == nil || operation == nil {
+		return ErrInvalidAdapter
+	}
+	return adapter.policy.Do(ctx, func(operationContext context.Context) error {
+		if err := budget.Take(); err != nil {
+			return err
+		}
+		return operation(operationContext)
+	})
 }

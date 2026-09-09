@@ -10,6 +10,54 @@
       "packages": [
         {
           "module_directory": ".",
+          "directory": "adapters/idempotency",
+          "name": "sequenceridempotency",
+          "import_path": "github.com/faustbrian/go-sequencer/adapters/idempotency",
+          "kind": "public",
+          "production": true,
+          "executable": true,
+          "coverage_required": true,
+          "build_required": true,
+          "build_tags": []
+        },
+        {
+          "module_directory": ".",
+          "directory": "adapters/lease",
+          "name": "sequencerlease",
+          "import_path": "github.com/faustbrian/go-sequencer/adapters/lease",
+          "kind": "public",
+          "production": true,
+          "executable": true,
+          "coverage_required": true,
+          "build_required": true,
+          "build_tags": []
+        },
+        {
+          "module_directory": ".",
+          "directory": "adapters/queue",
+          "name": "sequencerqueue",
+          "import_path": "github.com/faustbrian/go-sequencer/adapters/queue",
+          "kind": "public",
+          "production": true,
+          "executable": true,
+          "coverage_required": true,
+          "build_required": true,
+          "build_tags": []
+        },
+        {
+          "module_directory": ".",
+          "directory": "adapters/retry",
+          "name": "sequencerretry",
+          "import_path": "github.com/faustbrian/go-sequencer/adapters/retry",
+          "kind": "public",
+          "production": true,
+          "executable": true,
+          "coverage_required": true,
+          "build_required": true,
+          "build_tags": []
+        },
+        {
+          "module_directory": ".",
           "directory": ".",
           "name": "sequencer",
           "import_path": "github.com/faustbrian/go-sequencer",
@@ -365,11 +413,15 @@
           "github.com/faustbrian/go-sequencer"
         ],
         "package_selection": {
+          "github.com/faustbrian/go-sequencer/adapters/idempotency": "Use to adapt an application idempotency gate to sequencer attempt execution with bounded terminal cleanup.",
+          "github.com/faustbrian/go-sequencer/adapters/lease": "Use to adapt an external fenced lease acquirer to sequencer execution with bounded release cleanup.",
+          "github.com/faustbrian/go-sequencer/adapters/queue": "Use to publish sequencer requests or execute delivered requests with explicit acknowledgement and rejection settlement.",
+          "github.com/faustbrian/go-sequencer/adapters/retry": "Use for inline retry classification and execution against the shared sequencer attempt budget.",
           "github.com/faustbrian/go-sequencer": "Use for immutable dependency plans, fenced durable attempts, synchronous runners, leaderless fleet execution, explicit retry ownership, and unknown-outcome reconciliation.",
-          "github.com/faustbrian/go-sequencer/goidempotency": "Use to adapt an application idempotency gate to sequencer attempt execution with bounded terminal cleanup.",
-          "github.com/faustbrian/go-sequencer/golease": "Use to adapt an external fenced lease acquirer to sequencer execution with bounded release cleanup.",
-          "github.com/faustbrian/go-sequencer/goqueue": "Use to publish sequencer requests or execute delivered requests with explicit acknowledgement and rejection settlement.",
-          "github.com/faustbrian/go-sequencer/goretry": "Use for inline retry classification and execution against the shared sequencer attempt budget.",
+          "github.com/faustbrian/go-sequencer/goidempotency": "Compatibility path; prefer adapters/idempotency for bounded idempotency-gate cleanup.",
+          "github.com/faustbrian/go-sequencer/golease": "Compatibility path; prefer adapters/lease for externally acquired fenced leases.",
+          "github.com/faustbrian/go-sequencer/goqueue": "Compatibility path; prefer adapters/queue for identity-only queue dispatch and settlement.",
+          "github.com/faustbrian/go-sequencer/goretry": "Compatibility path; prefer adapters/retry for shared-budget inline retries.",
           "github.com/faustbrian/go-sequencer/memory": "Use for deterministic process-local store, lease, and queue behavior where restart durability is unnecessary.",
           "github.com/faustbrian/go-sequencer/migrations": "Use to assert application schema-version prerequisites without making sequencer own migration history.",
           "github.com/faustbrian/go-sequencer/postgres": "Use for durable fenced sequencer state backed by a caller-owned PostgreSQL pool.",
@@ -400,6 +452,10 @@
         },
         "optional_owned_dependencies": [],
         "adapters": [
+          "github.com/faustbrian/go-sequencer/adapters/idempotency",
+          "github.com/faustbrian/go-sequencer/adapters/lease",
+          "github.com/faustbrian/go-sequencer/adapters/queue",
+          "github.com/faustbrian/go-sequencer/adapters/retry",
           "github.com/faustbrian/go-sequencer/goidempotency",
           "github.com/faustbrian/go-sequencer/golease",
           "github.com/faustbrian/go-sequencer/goqueue",
@@ -440,7 +496,7 @@
           "faq": "docs/faq.md",
           "changelog": "CHANGELOG.md",
           "pkg_go_dev": "https://pkg.go.dev/github.com/faustbrian/go-sequencer",
-          "ecosystem_index": "https://github.com/faustbrian/go-library-tools/blob/v1.4.0/docs/ecosystem/README.md"
+          "ecosystem_index": "https://github.com/faustbrian/go-library-tools/blob/v1.6.2/docs/ecosystem/README.md"
         },
         "known_good_compatibility_sets": [],
         "delivery": {

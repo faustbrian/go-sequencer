@@ -1,24 +1,26 @@
-// Package goidempotency bridges explicitly idempotent operations to a durable
-// idempotency service without hiding availability or replay decisions.
+// Package goidempotency provides the retained Sequencer idempotency adapter.
+//
+// Deprecated: use github.com/faustbrian/go-sequencer/adapters/idempotency.
+// This package remains supported for the longer of 180 days after successor
+// public availability and two subsequently published stable minor releases.
 package goidempotency
 
 import (
 	"context"
-	"errors"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	adapter "github.com/faustbrian/go-sequencer/adapters/idempotency"
 )
 
 const (
 	// DefaultCleanupTimeout bounds a terminal gate update when New is used.
-	DefaultCleanupTimeout = 5 * time.Second
+	DefaultCleanupTimeout = adapter.DefaultCleanupTimeout
 	// MaxCleanupTimeout is the largest configurable terminal gate update bound.
-	MaxCleanupTimeout = time.Minute
+	MaxCleanupTimeout = adapter.MaxCleanupTimeout
 )
 
 // ErrInvalidAdapter reports missing idempotency dependencies or keys.
-var ErrInvalidAdapter = errors.New("sequencer/goidempotency: invalid adapter")
+var ErrInvalidAdapter = adapter.ErrInvalidAdapter
 
 // Token is the opaque ownership proof returned by the application service.
 type Token any
@@ -31,10 +33,7 @@ type Gate interface {
 }
 
 // Adapter coordinates one explicitly idempotent callback.
-type Adapter struct {
-	gate           Gate
-	cleanupTimeout time.Duration
-}
+type Adapter struct{ inner *adapter.Adapter }
 
 // New validates the idempotency gate.
 func New(gate Gate) (*Adapter, error) {
@@ -43,36 +42,31 @@ func New(gate Gate) (*Adapter, error) {
 
 // NewWithCleanupTimeout validates the gate and finite terminal-update bound.
 func NewWithCleanupTimeout(gate Gate, cleanupTimeout time.Duration) (*Adapter, error) {
-	if gate == nil || cleanupTimeout <= 0 || cleanupTimeout > MaxCleanupTimeout {
+	if gate == nil {
 		return nil, ErrInvalidAdapter
 	}
-	return &Adapter{gate: gate, cleanupTimeout: cleanupTimeout}, nil
+	inner, err := adapter.NewWithCleanupTimeout(gateBridge{gate: gate}, cleanupTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return &Adapter{inner: inner}, nil
 }
 
 // Do runs only newly acquired work and records its terminal result.
 func (adapter *Adapter) Do(ctx context.Context, key string, execute func(context.Context) error) error {
-	if key == "" || execute == nil {
-		return ErrInvalidAdapter
-	}
-	token, shouldExecute, err := adapter.gate.Begin(ctx, key)
-	if err != nil || !shouldExecute {
-		return err
-	}
-	if token == nil {
-		return ErrInvalidAdapter
-	}
-	if err = execute(ctx); err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.cleanupTimeout)
-		defer cancel()
-		if cleanupErr := adapter.gate.Fail(cleanupCtx, token, err); cleanupErr != nil {
-			return sequencer.UnknownResult(errors.Join(err, cleanupErr))
-		}
-		return err
-	}
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.cleanupTimeout)
-	defer cancel()
-	if err := adapter.gate.Complete(cleanupCtx, token); err != nil {
-		return sequencer.UnknownResult(err)
-	}
-	return nil
+	return adapter.inner.Do(ctx, key, execute)
+}
+
+type gateBridge struct{ gate Gate }
+
+func (bridge gateBridge) Begin(ctx context.Context, key string) (adapter.Token, bool, error) {
+	return bridge.gate.Begin(ctx, key)
+}
+
+func (bridge gateBridge) Complete(ctx context.Context, token adapter.Token) error {
+	return bridge.gate.Complete(ctx, token)
+}
+
+func (bridge gateBridge) Fail(ctx context.Context, token adapter.Token, err error) error {
+	return bridge.gate.Fail(ctx, token, err)
 }

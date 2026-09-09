@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/goretry"
+	goretry "github.com/faustbrian/go-sequencer/adapters/retry"
 )
 
 func TestExecutionBudgetIsFiniteNilSafeAndConcurrent(t *testing.T) {

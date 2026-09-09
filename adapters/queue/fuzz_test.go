@@ -1,4 +1,4 @@
-package goqueue_test
+package sequencerqueue_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faustbrian/go-sequencer/goqueue"
+	goqueue "github.com/faustbrian/go-sequencer/adapters/queue"
 )
 
 var fuzzIdentifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)

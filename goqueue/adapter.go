@@ -1,30 +1,22 @@
-// Package goqueue bridges durable operation identities to asynchronous queues.
-// It intentionally carries no handler payload, transaction, or secret data.
+// Package goqueue provides the retained Sequencer queue adapter.
+//
+// Deprecated: use github.com/faustbrian/go-sequencer/adapters/queue. This
+// package remains supported for the longer of 180 days after successor public
+// availability and two subsequently published stable minor releases.
 package goqueue
 
 import (
 	"context"
-	"crypto/rand"
-	"errors"
-	"regexp"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-)
-
-var (
-	channelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
-)
-
-const (
-	maxDeliveryIDBytes = 255
+	adapter "github.com/faustbrian/go-sequencer/adapters/queue"
 )
 
 var (
 	// ErrInvalidAdapter reports incomplete asynchronous dependencies or messages.
-	ErrInvalidAdapter = errors.New("sequencer/goqueue: invalid adapter")
+	ErrInvalidAdapter = adapter.ErrInvalidAdapter
 	// ErrPublishOutcomeUnknown reports that queue admission could not be confirmed.
-	// The returned Message retains its delivery identity for reconciliation.
-	ErrPublishOutcomeUnknown = errors.New("sequencer/goqueue: publish outcome unknown")
+	ErrPublishOutcomeUnknown = adapter.ErrPublishOutcomeUnknown
 )
 
 // Request identifies the immutable definition to dispatch.
@@ -35,8 +27,7 @@ type Request struct {
 	Channel     string                `json:"channel,omitempty"`
 }
 
-// Message is a payload-free durable queue command. Queue redelivery is safe
-// because the worker delegates eligibility and ownership to the ledger.
+// Message is a payload-free durable queue command.
 type Message struct {
 	OperationID sequencer.OperationID `json:"operation_id"`
 	Version     uint                  `json:"version"`
@@ -45,65 +36,55 @@ type Message struct {
 	DeliveryID  string                `json:"delivery_id"`
 }
 
-// Publisher is the narrow seam implemented by a queue transport wrapper. Any
-// returned error means queue admission is unknown rather than definitely absent.
+// Publisher is the narrow seam implemented by a queue transport wrapper.
 type Publisher interface {
 	Publish(context.Context, string, Message) error
 }
 
 // Dispatcher publishes bounded identity-only commands.
-type Dispatcher struct {
-	publisher Publisher
-	topic     string
-	channel   string
-}
+type Dispatcher struct{ inner *adapter.Dispatcher }
 
-// NewChannelDispatcher binds a semantic operation channel to one transport topic.
+// NewChannelDispatcher binds a semantic operation channel to one topic.
 func NewChannelDispatcher(publisher Publisher, channel, topic string) (*Dispatcher, error) {
-	if !channelPattern.MatchString(channel) {
+	if publisher == nil {
 		return nil, ErrInvalidAdapter
 	}
-	dispatcher, err := NewDispatcher(publisher, topic)
+	inner, err := adapter.NewChannelDispatcher(publisherBridge{publisher: publisher}, channel, topic)
 	if err != nil {
 		return nil, err
 	}
-	dispatcher.channel = channel
-	return dispatcher, nil
+	return &Dispatcher{inner: inner}, nil
 }
 
 // NewDispatcher validates asynchronous transport dependencies.
 func NewDispatcher(publisher Publisher, topic string) (*Dispatcher, error) {
-	if publisher == nil || topic == "" || len(topic) > 255 {
+	if publisher == nil {
 		return nil, ErrInvalidAdapter
 	}
-	return &Dispatcher{publisher: publisher, topic: topic}, nil
+	inner, err := adapter.NewDispatcher(publisherBridge{publisher: publisher}, topic)
+	if err != nil {
+		return nil, err
+	}
+	return &Dispatcher{inner: inner}, nil
 }
 
-// Dispatch publishes an operation command. It never claims cross-operation
-// or enqueue-to-worker transaction atomicity.
+// Dispatch publishes an operation command.
 func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Message, error) {
-	if !request.OperationID.Valid() || request.Version == 0 ||
-		request.Checksum == "" || len(request.Checksum) > sequencer.DefaultMaxChecksumBytes ||
-		(request.Channel != "" && !channelPattern.MatchString(request.Channel)) ||
-		(dispatcher.channel != "" && request.Channel != dispatcher.channel) {
-		return Message{}, ErrInvalidAdapter
-	}
-	message := Message{OperationID: request.OperationID, Version: request.Version, Checksum: request.Checksum, Channel: request.Channel, DeliveryID: rand.Text()}
-	if err := dispatcher.publisher.Publish(ctx, dispatcher.topic, message); err != nil {
-		return message, errors.Join(ErrPublishOutcomeUnknown, err)
-	}
-	return message, nil
+	message, err := dispatcher.inner.Dispatch(ctx, adapter.Request{
+		OperationID: request.OperationID,
+		Version:     request.Version,
+		Checksum:    request.Checksum,
+		Channel:     request.Channel,
+	})
+	return fromCanonicalMessage(message), err
 }
 
-// Executor performs a ledger-owned attempt for one redelivered message. A nil
-// error confirms durable completion, ErrUnknownResult leaves the result
-// unsettled, and every other error is a definite failure.
+// Executor performs a ledger-owned attempt for one redelivered message.
 type Executor interface {
 	ExecuteMessage(context.Context, Message) error
 }
 
 // Settlement controls one queue delivery after durable execution returns.
-// Implementations bind these operations to the delivery being handled.
 type Settlement interface {
 	Acknowledge(context.Context) error
 	Reject(context.Context) error
@@ -113,79 +94,77 @@ type Settlement interface {
 type Disposition uint8
 
 const (
-	// Acknowledged means durable completion and queue acknowledgement both succeeded.
+	// Acknowledged means durable completion and acknowledgement succeeded.
 	Acknowledged Disposition = iota + 1
-	// Rejected means execution definitely failed and queue rejection succeeded.
+	// Rejected means execution definitely failed and rejection succeeded.
 	Rejected
-	// Unsettled means execution or queue settlement remains unknown and redelivery is safe.
+	// Unsettled means execution or settlement remains unknown.
 	Unsettled
 )
 
 // Worker validates queue input and invokes the durable executor.
-type Worker struct {
-	executor Executor
-	channel  string
-}
+type Worker struct{ inner *adapter.Worker }
 
 // NewWorker constructs an explicit worker handler; it starts no goroutines.
 func NewWorker(executor Executor) (*Worker, error) {
 	if executor == nil {
 		return nil, ErrInvalidAdapter
 	}
-	return &Worker{executor: executor}, nil
+	inner, err := adapter.NewWorker(executorBridge{executor: executor})
+	return &Worker{inner: inner}, err
 }
 
 // NewChannelWorker binds a worker to exactly one semantic operation channel.
 func NewChannelWorker(channel string, executor Executor) (*Worker, error) {
-	if !channelPattern.MatchString(channel) {
+	if executor == nil {
 		return nil, ErrInvalidAdapter
 	}
-	worker, err := NewWorker(executor)
+	inner, err := adapter.NewChannelWorker(channel, executorBridge{executor: executor})
 	if err != nil {
 		return nil, err
 	}
-	worker.channel = channel
-	return worker, nil
+	return &Worker{inner: inner}, nil
 }
 
 // Handle processes one queue delivery under ledger-owned idempotency.
 func (worker *Worker) Handle(ctx context.Context, message Message) error {
-	if !validMessage(message, worker.channel) {
-		return ErrInvalidAdapter
-	}
-	return worker.executor.ExecuteMessage(ctx, message)
+	return worker.inner.Handle(ctx, toCanonicalMessage(message))
 }
 
-// HandleDelivery executes and settles one delivery. Commit-unknown execution
-// and unconfirmed settlement remain unsettled so the transport may redeliver.
+// HandleDelivery executes and settles one delivery.
 func (worker *Worker) HandleDelivery(ctx context.Context, message Message, settlement Settlement) (Disposition, error) {
-	if !validMessage(message, worker.channel) || settlement == nil {
-		return Unsettled, ErrInvalidAdapter
-	}
-	executionErr := worker.executor.ExecuteMessage(ctx, message)
-	if errors.Is(executionErr, sequencer.ErrUnknownResult) {
-		return Unsettled, executionErr
-	}
-	if executionErr == nil {
-		if err := settlement.Acknowledge(ctx); err != nil {
-			return Unsettled, err
-		}
-		return Acknowledged, nil
-	}
-	if err := settlement.Reject(ctx); err != nil {
-		return Unsettled, errors.Join(executionErr, err)
-	}
-	return Rejected, executionErr
+	disposition, err := worker.inner.HandleDelivery(ctx, toCanonicalMessage(message), settlement)
+	return Disposition(disposition), err
 }
 
-func validMessage(message Message, expectedChannel string) bool {
-	if !message.OperationID.Valid() || message.Version == 0 ||
-		message.Checksum == "" || len(message.Checksum) > sequencer.DefaultMaxChecksumBytes ||
-		message.DeliveryID == "" || len(message.DeliveryID) > maxDeliveryIDBytes {
-		return false
+type publisherBridge struct{ publisher Publisher }
+
+func (bridge publisherBridge) Publish(ctx context.Context, topic string, message adapter.Message) error {
+	return bridge.publisher.Publish(ctx, topic, fromCanonicalMessage(message))
+}
+
+type executorBridge struct{ executor Executor }
+
+func (bridge executorBridge) ExecuteMessage(ctx context.Context, message adapter.Message) error {
+	return bridge.executor.ExecuteMessage(ctx, fromCanonicalMessage(message))
+}
+
+func toCanonicalMessage(message Message) adapter.Message {
+	return adapter.Message{
+		OperationID: message.OperationID,
+		Version:     message.Version,
+		Checksum:    message.Checksum,
+		Channel:     message.Channel,
+		DeliveryID:  message.DeliveryID,
 	}
-	if expectedChannel != "" {
-		return message.Channel == expectedChannel
+}
+
+func fromCanonicalMessage(message adapter.Message) Message {
+	return Message{
+		OperationID: message.OperationID,
+		Version:     message.Version,
+		Checksum:    message.Checksum,
+		Channel:     message.Channel,
+		DeliveryID:  message.DeliveryID,
 	}
-	return message.Channel == "" || channelPattern.MatchString(message.Channel)
 }

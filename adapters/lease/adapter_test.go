@@ -1,4 +1,4 @@
-package golease_test
+package sequencerlease_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"time"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/golease"
+	golease "github.com/faustbrian/go-sequencer/adapters/lease"
 )
 
 var errMissingReleaseDeadline = errors.New("release context has no deadline")

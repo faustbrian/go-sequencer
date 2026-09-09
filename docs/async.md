@@ -1,8 +1,8 @@
 # Asynchronous execution
 
-`goqueue.Dispatcher` publishes operation ID, version, checksum, and a delivery
-identity. It does not serialize handler payloads, dependencies, transactions,
-or secrets. Operation IDs use the 255-byte sequencer identifier grammar;
+`adapters/queue.Dispatcher` publishes operation ID, version, checksum, and a
+delivery identity. It does not serialize handler payloads, dependencies,
+transactions, or secrets. Operation IDs use the 255-byte sequencer identifier grammar;
 checksums are limited to 512 bytes; delivery identities are limited to 255
 bytes. The application adapts this narrow publisher to queue and must apply a
 bounded transport decoder before constructing a message.
@@ -12,9 +12,10 @@ the generated message together with `ErrPublishOutcomeUnknown`, preserving the
 delivery identity for transport reconciliation instead of generating an
 uncorrelated retry.
 
-Queue delivery is at least once. `goqueue.Worker` delegates every delivery to
-a durable executor; the ledger decides whether the operation is eligible and
-who owns the attempt. Redelivery must never bypass checksum or fencing checks.
+Queue delivery is at least once. `adapters/queue.Worker` delegates every
+delivery to a durable executor; the ledger decides whether the operation is
+eligible and who owns the attempt. Redelivery must never bypass checksum or
+fencing checks.
 
 Use `Worker.HandleDelivery` with a delivery-bound settlement. Confirmed durable
 completion is acknowledged, definite execution failure is rejected, and

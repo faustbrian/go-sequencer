@@ -12,7 +12,7 @@ import (
 	"time"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/goretry"
+	goretry "github.com/faustbrian/go-sequencer/adapters/retry"
 	"github.com/faustbrian/go-sequencer/memory"
 	"github.com/faustbrian/go-sequencer/sequencertest"
 )

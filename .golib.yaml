@@ -1,6 +1,6 @@
 schema_version: 1
-tool_version: v1.4.0
-tool_checksums_sha256: ba1b71d41dc9b58d5bfb411bc89ae2d45b6f3f778152714bfd1afeab0bef2f33
+tool_version: v1.6.2
+tool_checksums_sha256: 2a740a44fee468f042b4a66e086fc01a02d8d28877c9b1866e278102665b35ad
 
 manifest:
   modules: modules.json
@@ -54,7 +54,7 @@ operations:
         budget: 10000x
         timeout: 20m
       - type: go-test
-        packages: ["./goqueue"]
+        packages: ["./adapters/queue"]
         fuzz: '^FuzzQueueMessageJSONValidation$'
         budget: 10000x
         timeout: 20m

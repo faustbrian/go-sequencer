@@ -1,4 +1,4 @@
-package goidempotency_test
+package sequenceridempotency_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"time"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/goidempotency"
+	goidempotency "github.com/faustbrian/go-sequencer/adapters/idempotency"
 )
 
 var errMissingCleanupDeadline = errors.New("cleanup context has no deadline")

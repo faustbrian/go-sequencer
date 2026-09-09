@@ -1,4 +1,4 @@
-package goqueue_test
+package sequencerqueue_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"time"
 
 	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/goqueue"
+	goqueue "github.com/faustbrian/go-sequencer/adapters/queue"
 	"github.com/faustbrian/go-sequencer/memory"
 )
 

@@ -55,12 +55,16 @@ global runtime.
 | `postgres` | Durable fenced state using a caller-owned PostgreSQL pool |
 | `migrations` | Checking application-owned schema migration prerequisites |
 | `scheduler` | Sending absolute future-eligibility requests to an application-owned scheduler |
-| `goqueue` | Publishing or consuming identity-only operation requests with explicit settlement |
-| `goidempotency` | Protecting explicitly idempotent handlers through an application-owned durable gate |
-| `golease` | Scoping singleton work to a caller-supplied fenced lease |
-| `goretry` | Running bounded inline retries against the shared attempt budget |
+| `adapters/queue` | Publishing or consuming identity-only operation requests with explicit settlement |
+| `adapters/idempotency` | Protecting explicitly idempotent handlers through an application-owned durable gate |
+| `adapters/lease` | Scoping singleton work to a caller-supplied fenced lease |
+| `adapters/retry` | Running bounded inline retries against the shared attempt budget |
 | `sequencehttp` | Authorized inspection, reset, and reconciliation HTTP controls |
 | `sequencertest` | Deterministic clocks, operation fixtures, and fault-injecting test stores |
+
+The released `goqueue`, `goidempotency`, `golease`, and `goretry` imports
+remain compatibility facades for the longer of 180 days after successor
+availability and two subsequently published stable minor releases.
 
 PostgreSQL is the production reference store. The current integration paths
 are explicit seams; applications still own database pools, queue settlement,
@@ -92,8 +96,8 @@ Start with the [quickstart](docs/quickstart.md), then read the
 the [fleet operation contract](docs/kubernetes.md). All documentation is indexed in
 [docs/README.md](docs/README.md).
 
-The versioned [Golib ecosystem index](https://github.com/faustbrian/go-library-tools/blob/v1.4.0/docs/ecosystem/README.md)
-and [Persistence and durability family](https://github.com/faustbrian/go-library-tools/blob/v1.4.0/docs/ecosystem/design-language.md#package-families-and-selection)
+The versioned [Golib ecosystem index](https://github.com/faustbrian/go-library-tools/blob/v1.6.2/docs/ecosystem/README.md)
+and [Persistence and durability family](https://github.com/faustbrian/go-library-tools/blob/v1.6.2/docs/ecosystem/design-language.md#package-families-and-selection)
 describe the shared design language, related packages, and composition rules.
 
 The [API guide](docs/api.md), [cookbook](docs/cookbook.md),

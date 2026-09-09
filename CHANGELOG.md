@@ -15,6 +15,9 @@
 
 ### Documentation
 
+- Add canonical installation, a standalone executable quick start, the public
+  package map, Scheduler selection guidance, and explicit lifecycle, ownership,
+  failure, and support navigation.
 - Point ecosystem and package-family navigation at the immutable v1.4.0
   documentation release.
 - Link the module to the immutable v1.3.0 Golib ecosystem and package-family

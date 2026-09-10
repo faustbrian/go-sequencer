@@ -19,7 +19,7 @@ The root module contains no global registry, reflection discovery, filesystem
 scan, hidden worker, or implicit goroutine. Applications construct operations,
 stores, runners, transport adapters, authentication, and dependencies.
 
-The module follows stable v1 compatibility and requires Go 1.26.6 or later.
+The module follows stable v1 compatibility and requires Go 1.27.0 or later.
 
 ## Install
 

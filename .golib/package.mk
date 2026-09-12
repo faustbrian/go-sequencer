@@ -6,7 +6,10 @@ STATICCHECK_VERSION ?= v0.8.0-rc.1
 GOVULNCHECK_VERSION ?= v1.6.0
 ACTIONLINT_VERSION ?= v1.7.12
 
-.PHONY: benchmark check coverage docs format format-check fuzz integration \
+api:
+	./.golib/scripts/check-api-baseline.sh .
+
+.PHONY: api benchmark check coverage docs format format-check fuzz integration \
 	kubernetes lint mutation race safety staticcheck test tidy-check vet vuln workflows
 
 format:

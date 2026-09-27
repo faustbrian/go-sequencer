@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 func ExampleRunner() {
 	spec := sequencer.OperationSpec{
-		ID: "postal.normalize", Version: 1, Checksum: "sha256:reviewed",
+		ID: "postal.normalize", Version: 1, Checksum: "sha256:fa89cb52f3af6c2d4d9563469400709593cb45fc90d480ff34cacda5a76189aa",
 		Description: "Normalize postcodes", Channel: "deploy",
 		Policy: sequencer.Policy{Mode: sequencer.OneTime, MaxAttempts: 1, MaxExceptions: 1, Timeout: time.Minute},
 		Handler: sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {

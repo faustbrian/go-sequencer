@@ -6,12 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/sequencehttp"
+	"github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/sequencehttp"
 )
 
 func TestHandlerRequiresApplicationAuthorization(t *testing.T) {
@@ -417,17 +418,41 @@ func TestHandlerRejectsInspectVersionOutsidePlatformUint(t *testing.T) {
 	}
 }
 
-type controllerStub struct {
-	inspected string
-	executed  bool
-	reset     sequencehttp.ResetRequest
-	reconcile sequencer.ReconcileRequest
-	err       error
+func TestHandlerBoundsInspectionResponse(t *testing.T) {
+	controller := &controllerStub{inspection: sequencehttp.Inspection(strings.Repeat("x", sequencehttp.MaxResponseBytes+1))}
+	handler, err := sequencehttp.New(controller, authorizerStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	handler.ServeHTTP(response, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/operations/a?version=1", nil))
+	runtime.ReadMemStats(&after)
+	if response.Code != http.StatusInternalServerError || response.Body.Len() > sequencehttp.MaxResponseBytes {
+		t.Fatalf("status = %d, response bytes = %d", response.Code, response.Body.Len())
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 512<<10 {
+		t.Fatalf("oversized inspection allocated %d bytes in HTTP encoding", allocated)
+	}
 }
 
-func (controller *controllerStub) Inspect(_ context.Context, id string, version uint) (any, error) {
+type controllerStub struct {
+	inspected  string
+	inspection sequencehttp.Inspection
+	executed   bool
+	reset      sequencehttp.ResetRequest
+	reconcile  sequencer.ReconcileRequest
+	err        error
+}
+
+func (controller *controllerStub) Inspect(_ context.Context, id string, version uint) (sequencehttp.Inspection, error) {
 	controller.inspected = id
-	return map[string]any{"id": id, "version": version}, controller.err
+	if controller.inspection != nil {
+		return controller.inspection, controller.err
+	}
+	return sequencehttp.Inspection(`{"id":"` + id + `","version":` + strconv.FormatUint(uint64(version), 10) + `}`), controller.err
 }
 
 func (controller *controllerStub) Execute(context.Context) error {

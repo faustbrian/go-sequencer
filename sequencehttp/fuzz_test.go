@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/sequencehttp"
+	"github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/sequencehttp"
 )
 
 func FuzzAdministrativeCommands(fuzz *testing.F) {
@@ -66,8 +66,8 @@ type fuzzController struct {
 	reconcile       sequencer.ReconcileRequest
 }
 
-func (*fuzzController) Inspect(_ context.Context, id string, version uint) (any, error) {
-	return map[string]any{"id": id, "version": version}, nil
+func (*fuzzController) Inspect(context.Context, string, uint) (sequencehttp.Inspection, error) {
+	return sequencehttp.Inspection(`{"id":"a","version":1}`), nil
 }
 
 func (*fuzzController) Execute(context.Context) error { return nil }

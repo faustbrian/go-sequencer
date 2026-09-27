@@ -49,7 +49,7 @@ func TestRunnerReportChannelsAreSelectedOrSortedUnique(t *testing.T) {
 
 	spec := func(id OperationID, channel string) OperationSpec {
 		return OperationSpec{
-			ID: id, Version: 1, Checksum: "sum", Description: "description", Channel: channel,
+			ID: id, Version: 1, Checksum: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", Description: "description", Channel: channel,
 			Policy:  Policy{Mode: OneTime, MaxAttempts: 1, MaxExceptions: 1, Timeout: time.Second},
 			Handler: HandlerFunc(func(context.Context, Attempt) (Output, error) { return Output{}, nil }),
 		}

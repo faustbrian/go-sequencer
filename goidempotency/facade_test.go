@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	sequenceridempotency "github.com/faustbrian/go-sequencer/adapters/idempotency"
-	"github.com/faustbrian/go-sequencer/goidempotency"
+	sequenceridempotency "github.com/faustbrian/go-sequencer/v2/adapters/idempotency"
+	"github.com/faustbrian/go-sequencer/v2/goidempotency"
 )
 
 func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {

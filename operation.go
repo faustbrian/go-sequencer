@@ -3,10 +3,13 @@ package sequencer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -30,8 +33,9 @@ const (
 	DefaultMaxOperations = 10_000
 	// DefaultMaxDependencies bounds direct dependencies per operation.
 	DefaultMaxDependencies = 256
-	// DefaultMaxChecksumBytes bounds one reviewed definition checksum.
-	DefaultMaxChecksumBytes = 512
+	// DefaultMaxChecksumBytes is the exact encoded length of one canonical
+	// SHA-256 definition checksum.
+	DefaultMaxChecksumBytes = len(sha256Prefix) + sha256.Size*2
 	// DefaultMaxDescriptionBytes bounds one operation description.
 	DefaultMaxDescriptionBytes = 4 << 10
 	// DefaultMaxTags bounds tags per operation.
@@ -55,6 +59,23 @@ const (
 )
 
 var identifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
+
+const sha256Prefix = "sha256:"
+
+// ValidChecksum reports whether value is a canonical lowercase SHA-256 digest.
+func ValidChecksum(value string) bool {
+	if len(value) != len(sha256Prefix)+64 || !strings.HasPrefix(value, sha256Prefix) || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(value[len(sha256Prefix):])
+	return err == nil
+}
+
+// ChecksumBytes returns the canonical SHA-256 identity for reviewed source.
+func ChecksumBytes(source []byte) string {
+	digest := sha256.Sum256(source)
+	return sha256Prefix + hex.EncodeToString(digest[:])
+}
 
 // OperationID is a stable identifier shared by code, the ledger, and audit logs.
 type OperationID string
@@ -210,7 +231,7 @@ type Operation struct{ spec OperationSpec }
 // NewOperation validates and freezes a definition.
 func NewOperation(spec OperationSpec) (Operation, error) {
 	if !spec.ID.Valid() || spec.Version == 0 ||
-		spec.Checksum == "" || len(spec.Checksum) > DefaultMaxChecksumBytes ||
+		!ValidChecksum(spec.Checksum) ||
 		spec.Description == "" || len(spec.Description) > DefaultMaxDescriptionBytes ||
 		!identifierPattern.MatchString(spec.Channel) ||
 		spec.Handler == nil || spec.Policy.MaxAttempts == 0 || spec.Policy.MaxExceptions == 0 ||
@@ -239,7 +260,7 @@ func NewOperation(spec OperationSpec) (Operation, error) {
 	compensationDependency := false
 	for _, dependency := range spec.DependencyRefs {
 		if dependency.ID == spec.ID || !dependency.ID.Valid() ||
-			dependency.Version == 0 || dependency.Checksum == "" || len(dependency.Checksum) > DefaultMaxChecksumBytes {
+			dependency.Version == 0 || !ValidChecksum(dependency.Checksum) {
 			return Operation{}, fmt.Errorf("%w: invalid dependency %q", ErrInvalidOperation, dependency.ID)
 		}
 		if _, duplicate := seen[dependency.ID]; duplicate {
@@ -251,7 +272,7 @@ func NewOperation(spec OperationSpec) (Operation, error) {
 		}
 	}
 	if spec.Compensates != nil && (!compensationDependency || spec.Compensates.ID == spec.ID ||
-		spec.Compensates.Version == 0 || spec.Compensates.Checksum == "") {
+		spec.Compensates.Version == 0 || !ValidChecksum(spec.Compensates.Checksum)) {
 		return Operation{}, fmt.Errorf("%w: invalid compensation dependency", ErrInvalidOperation)
 	}
 	return Operation{spec: cloneSpec(spec)}, nil

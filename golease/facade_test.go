@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	sequencerlease "github.com/faustbrian/go-sequencer/adapters/lease"
-	"github.com/faustbrian/go-sequencer/golease"
+	sequencerlease "github.com/faustbrian/go-sequencer/v2/adapters/lease"
+	"github.com/faustbrian/go-sequencer/v2/golease"
 )
 
 func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {

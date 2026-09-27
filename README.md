@@ -15,17 +15,26 @@ repeatable application operations. It keeps data changes separate from schema
 migrations, compiles immutable dependency plans, and records every attempt
 under fenced ownership.
 
-The root module contains no global registry, reflection discovery, filesystem
-scan, hidden worker, or implicit goroutine. Applications construct operations,
-stores, runners, transport adapters, authentication, and dependencies.
+The root module contains no global registry, reflection discovery, or
+filesystem scan. Applications construct operations, stores, runners, transport
+adapters, authentication, and dependencies. Callback execution and observer
+delivery use the bounded goroutine lifecycles documented below.
 
-The module follows stable v1 compatibility and requires Go 1.27.0 or later.
+Main prepares the stable v2.0.0 release candidate and requires Go 1.27.0 or later.
+Version 2 is not installable until a `v2.0.0` release is published; released
+v1 consumers remain on `github.com/faustbrian/go-sequencer`.
 
 ## Install
+
+Install the released v1 module:
 
 ```sh
 go get github.com/faustbrian/go-sequencer
 ```
+
+The future v2 command is documented in the
+[compatibility guide](docs/compatibility.md), but cannot resolve until the
+`v2.0.0` release is published.
 
 ## Five-minute quick start
 
@@ -77,10 +86,11 @@ effects.
 executes synchronously. `Fleet` owns its bounded polling and lease-renewal
 goroutines; cancel its `Run` context to begin draining and let the configured
 shutdown wait bound graceful draining and the `Run` call. An uncooperative
-drain-only handler may continue after that timeout until the process manager
-terminates it. Constructors borrow stores and other injected collaborators, so
-callers must keep them valid, synchronize mutable state, and close owned
-resources after execution has stopped.
+handler may continue after an operation or shutdown deadline, but a fleet
+fails closed without replacing its retained execution slot until the process
+manager terminates it. Constructors borrow stores and other injected
+collaborators, so callers must keep them valid, synchronize mutable state, and
+close owned resources after execution has stopped.
 
 Handlers receive a context and a fenced attempt. Typed failures preserve their
 in-process causes, while only redaction-safe classifications enter durable

@@ -2,9 +2,11 @@ package sequencer_test
 
 import (
 	"errors"
+	"runtime"
+	"strings"
 	"testing"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 )
 
 func TestClassifiedErrorsPreserveCause(t *testing.T) {
@@ -69,5 +71,33 @@ func TestSanitizePersistenceTextBoundsAndNormalizes(t *testing.T) {
 	}
 	if got := sequencer.SanitizePersistenceText("éa", 1); got != "" {
 		t.Fatalf("bounded value skipped a non-fitting prefix rune: %q", got)
+	}
+}
+
+func TestSanitizePersistenceTextRedactsCommonCredentials(t *testing.T) {
+	t.Parallel()
+
+	value := "authorization: Bearer eyJ.secret password=hunter2 api_key=abcd"
+	got := sequencer.SanitizePersistenceText(value, 512)
+	for _, secret := range []string{"eyJ.secret", "hunter2", "abcd"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("SanitizePersistenceText() retained credential %q in %q", secret, got)
+		}
+	}
+}
+
+func TestSanitizePersistenceTextBoundsOversizedInputWork(t *testing.T) {
+	value := strings.Repeat("x", 8<<20) + " token=secret"
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	got := sequencer.SanitizePersistenceText(value, 64)
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(value)
+	if len(got) > 64 {
+		t.Fatalf("SanitizePersistenceText() length = %d, want at most 64", len(got))
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 512<<10 {
+		t.Fatalf("SanitizePersistenceText() allocated %d bytes for bounded output", allocated)
 	}
 }

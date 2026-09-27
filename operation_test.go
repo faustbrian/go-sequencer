@@ -2,24 +2,25 @@ package sequencer_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 )
 
 func TestNewOperationValidatesAndFreezesMetadata(t *testing.T) {
 	t.Parallel()
 
 	tags := []string{"postal", "backfill"}
-	dependencies := []sequencer.DependencyRef{{ID: "schema-ready", Version: 1, Checksum: "sha256:schema-ready"}}
+	dependencies := []sequencer.DependencyRef{{ID: "schema-ready", Version: 1, Checksum: checksumFor("schema-ready")}}
 	op, err := sequencer.NewOperation(sequencer.OperationSpec{
 		ID:             "postal.backfill-postcodes",
 		Version:        2,
-		Checksum:       "sha256:0123456789abcdef",
+		Checksum:       checksumFor("postal.backfill-postcodes"),
 		Description:    "Backfill normalized postcodes",
 		Tags:           tags,
 		Channel:        "deploy",
@@ -54,6 +55,21 @@ func TestNewOperationValidatesAndFreezesMetadata(t *testing.T) {
 	}
 }
 
+func TestNewOperationRequiresCryptographicSHA256Checksum(t *testing.T) {
+	t.Parallel()
+
+	spec := validSpec("checksum-contract")
+	spec.Checksum = "sha256:not-a-digest"
+	if _, err := sequencer.NewOperation(spec); !errors.Is(err, sequencer.ErrInvalidOperation) {
+		t.Fatalf("NewOperation() error = %v, want ErrInvalidOperation", err)
+	}
+
+	spec.Checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if _, err := sequencer.NewOperation(spec); err != nil {
+		t.Fatalf("NewOperation() valid SHA-256 error = %v", err)
+	}
+}
+
 func TestNewOperationRequiresAndFreezesExactDependencyReferences(t *testing.T) {
 	t.Parallel()
 
@@ -62,12 +78,12 @@ func TestNewOperationRequiresAndFreezesExactDependencyReferences(t *testing.T) {
 	if _, err := sequencer.NewOperation(legacy); !errors.Is(err, sequencer.ErrUnpinnedDependency) {
 		t.Fatalf("NewOperation(legacy dependency) error = %v, want ErrUnpinnedDependency", err)
 	}
-	legacy.DependencyRefs = []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"}}
+	legacy.DependencyRefs = []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: checksumFor("dependency-v1")}}
 	if _, err := sequencer.NewOperation(legacy); !errors.Is(err, sequencer.ErrUnpinnedDependency) {
 		t.Fatalf("NewOperation(mixed dependency forms) error = %v, want ErrUnpinnedDependency", err)
 	}
 
-	references := []sequencer.DependencyRef{{ID: "dependency", Version: 2, Checksum: "sha256:dependency-v2"}}
+	references := []sequencer.DependencyRef{{ID: "dependency", Version: 2, Checksum: checksumFor("dependency-v2")}}
 	exact := validSpec("exact-dependent")
 	exact.DependencyRefs = references
 	operation, err := sequencer.NewOperation(exact)
@@ -75,7 +91,7 @@ func TestNewOperationRequiresAndFreezesExactDependencyReferences(t *testing.T) {
 		t.Fatalf("NewOperation(exact dependency) error = %v", err)
 	}
 	references[0].Checksum = "mutated"
-	if got := operation.Spec().DependencyRefs[0].Checksum; got != "sha256:dependency-v2" {
+	if got := operation.Spec().DependencyRefs[0].Checksum; got != checksumFor("dependency-v2") {
 		t.Fatalf("operation retained caller dependency refs: %q", got)
 	}
 	snapshot := operation.Spec()
@@ -130,7 +146,7 @@ func TestNewOperationAcceptsEveryBoundedModeAndExactCollectionLimit(t *testing.T
 	t.Parallel()
 
 	spec := validSpec("repeatable.bounds")
-	spec.Checksum = strings.Repeat("c", 512)
+	spec.Checksum = checksumFor("repeatable.bounds")
 	spec.Description = strings.Repeat("d", 4<<10)
 	spec.Policy.Mode = sequencer.Repeatable
 	spec.Policy.Cancellation = sequencer.CancellationDrainOnly
@@ -140,9 +156,8 @@ func TestNewOperationAcceptsEveryBoundedModeAndExactCollectionLimit(t *testing.T
 	spec.Policy.MaxExceptions = 2
 	spec.DependencyRefs = make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies)
 	for index := range spec.DependencyRefs {
-		spec.DependencyRefs[index] = sequencer.DependencyRef{ID: sequencer.OperationID(fmt.Sprintf("dependency-%d", index)), Version: 1, Checksum: "sum"}
+		spec.DependencyRefs[index] = sequencer.DependencyRef{ID: sequencer.OperationID(fmt.Sprintf("dependency-%d", index)), Version: 1, Checksum: checksumFor(fmt.Sprintf("dependency-%d", index))}
 	}
-	spec.DependencyRefs[0].Checksum = strings.Repeat("c", 512)
 	spec.Tags = make([]string, sequencer.DefaultMaxTags)
 	for index := range spec.Tags {
 		spec.Tags[index] = fmt.Sprintf("tag-%d", index)
@@ -253,11 +268,15 @@ func TestNewOperationRejectsUnsafeDefinitions(t *testing.T) {
 
 func validSpec(id sequencer.OperationID) sequencer.OperationSpec {
 	return sequencer.OperationSpec{
-		ID: id, Version: 1, Checksum: "sha256:0123456789abcdef",
+		ID: id, Version: 1, Checksum: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Description: "test operation", Channel: "deploy",
 		Policy: sequencer.Policy{Mode: sequencer.OneTime, MaxAttempts: 1, MaxExceptions: 1, Timeout: time.Minute},
 		Handler: sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
 			return sequencer.Output{}, nil
 		}),
 	}
+}
+
+func checksumFor(value string) string {
+	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(value)))
 }

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
-	"github.com/faustbrian/go-sequencer/sequencertest"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
+	"github.com/faustbrian/go-sequencer/v2/sequencertest"
 )
 
 func TestFleetStopsAcceptingBeforeCancelingOwnedAttempts(t *testing.T) {
@@ -254,6 +254,197 @@ func TestFleetFailsReadinessWhenUncooperativeHandlerOutlivesLease(t *testing.T) 
 	}
 }
 
+func TestFleetFailsClosedWhenHandlerOutlivesOperationDeadline(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	started := make(chan struct{})
+	replacementStarted := make(chan struct{}, 1)
+
+	stuck := validSpec("fleet.deadline-a-stuck")
+	stuck.Policy.Timeout = 10 * time.Millisecond
+	stuck.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		close(started)
+		<-release
+		return sequencer.Output{}, nil
+	})
+	replacement := validSpec("fleet.deadline-b-replacement")
+	replacement.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		replacementStarted <- struct{}{}
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{stuck, replacement}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fleet, err := sequencer.NewFleet(plan, memory.New(), sequencer.FleetOptions{
+		RunnerOptions: sequencer.RunnerOptions{Owner: "pod-deadline"},
+		ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
+		MaxConcurrency: 1, ShutdownWait: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := startFleet(context.Background(), t, fleet)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("uncooperative handler did not start")
+	}
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, sequencer.ErrUnknownResult) {
+			t.Fatalf("Run() error = %v, want unknown result", runErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fleet continued after an uncooperative handler exhausted its operation deadline")
+	}
+	if fleet.Ready() || fleet.State() != sequencer.RunnerFailed {
+		t.Fatalf("state = %s, ready = %t; want failed and not ready", fleet.State(), fleet.Ready())
+	}
+	select {
+	case <-replacementStarted:
+		t.Fatal("fleet replaced capacity retained by an uncooperative handler")
+	default:
+	}
+}
+
+type delayedUnknownAdmissionStore struct {
+	*memory.Store
+	mu                      sync.Mutex
+	claims                  int
+	committed               chan struct{}
+	settlementEntered       chan struct{}
+	releaseSettlement       chan struct{}
+	secondReturned          chan struct{}
+	fleet                   *sequencer.Fleet
+	stateBeforeSecondReturn sequencer.RunnerState
+}
+
+func (store *delayedUnknownAdmissionStore) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
+	claim, err := store.Store.ClaimNext(ctx, request)
+	if err != nil {
+		return claim, err
+	}
+	store.mu.Lock()
+	store.claims++
+	second := store.claims == 2
+	store.mu.Unlock()
+	if second {
+		if store.settlementEntered != nil {
+			select {
+			case <-store.settlementEntered:
+			case <-ctx.Done():
+				return sequencer.Claim{}, ctx.Err()
+			}
+			store.stateBeforeSecondReturn = store.fleet.State()
+			close(store.secondReturned)
+			return claim, nil
+		}
+		select {
+		case <-store.committed:
+		case <-ctx.Done():
+			return sequencer.Claim{}, ctx.Err()
+		}
+		deadline := time.NewTimer(100 * time.Millisecond)
+		defer deadline.Stop()
+		poll := time.NewTicker(time.Millisecond)
+		defer poll.Stop()
+		for store.fleet.State() != sequencer.RunnerFailed {
+			select {
+			case <-poll.C:
+			case <-deadline.C:
+				goto returnClaim
+			case <-ctx.Done():
+				return sequencer.Claim{}, ctx.Err()
+			}
+		}
+	returnClaim:
+		store.stateBeforeSecondReturn = store.fleet.State()
+	}
+	return claim, nil
+}
+
+func (store *delayedUnknownAdmissionStore) Complete(ctx context.Context, completion sequencer.Completion) error {
+	if completion.State == sequencer.Indeterminate && store.settlementEntered != nil {
+		close(store.settlementEntered)
+		select {
+		case <-store.releaseSettlement:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := store.Store.Complete(ctx, completion); err != nil {
+		return err
+	}
+	if completion.State == sequencer.Indeterminate {
+		close(store.committed)
+	}
+	return nil
+}
+
+func TestFleetClosesAdmissionBeforeDelayedClaimAfterUnresponsiveHandler(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	replacementCalls := make(chan struct{}, 1)
+	stuck := validSpec("admission.a-stuck")
+	stuck.Policy.Timeout = 10 * time.Millisecond
+	stuck.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		<-release
+		return sequencer.Output{}, nil
+	})
+	replacement := validSpec("admission.b-replacement")
+	replacement.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		replacementCalls <- struct{}{}
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{stuck, replacement}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseSettlement := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCompletion := func() { releaseOnce.Do(func() { close(releaseSettlement) }) }
+	defer releaseCompletion()
+	store := &delayedUnknownAdmissionStore{Store: memory.New(), committed: make(chan struct{}), settlementEntered: make(chan struct{}), releaseSettlement: releaseSettlement, secondReturned: make(chan struct{})}
+	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{RunnerOptions: sequencer.RunnerOptions{Owner: "owner", HandlerStopWait: time.Millisecond}, MaxConcurrency: 2, ClaimInterval: time.Millisecond, ShutdownWait: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.fleet = fleet
+	done := startFleet(context.Background(), t, fleet)
+	select {
+	case <-store.secondReturned:
+	case <-time.After(time.Second):
+		t.Fatal("second claim was not returned during settlement")
+	}
+	if store.stateBeforeSecondReturn != sequencer.RunnerFailed {
+		t.Errorf("admission during blocked settlement=%v", store.stateBeforeSecondReturn)
+	}
+	select {
+	case <-replacementCalls:
+		t.Error("second handler admitted during blocked settlement")
+	case <-time.After(20 * time.Millisecond):
+	}
+	releaseCompletion()
+	if err := awaitFleetResult(t, done); !errors.Is(err, sequencer.ErrUnknownResult) {
+		t.Errorf("Run error=%v", err)
+	}
+	if store.stateBeforeSecondReturn != sequencer.RunnerFailed {
+		t.Errorf("admission state before delayed claim return=%v", store.stateBeforeSecondReturn)
+	}
+	select {
+	case <-replacementCalls:
+		t.Error("second handler admitted after unknown failure")
+	default:
+	}
+	record, err := store.Snapshot(context.Background(), stuck.ID, stuck.Version)
+	if err != nil || record.State != sequencer.Indeterminate {
+		t.Errorf("unknown settlement state=%v error=%v", record.State, err)
+	}
+}
+
 func TestFleetDoesNotStartClaimReturnedAfterLeaseFailureClosesAdmission(t *testing.T) {
 	settlementFailure := errors.New("settlement unavailable")
 	for _, test := range []struct {
@@ -348,7 +539,7 @@ func TestFleetDoesNotStartClaimReturnedAfterLeaseFailureClosesAdmission(t *testi
 					if event.Channel != second.Channel {
 						t.Fatalf("completed channel = %q, want %q", event.Channel, second.Channel)
 					}
-				default:
+				case <-time.After(time.Second):
 					t.Fatal("canceled claim did not emit a completion event")
 				}
 			}
@@ -1444,6 +1635,7 @@ func TestFleetBoundsRenewalByActualRemainingLease(t *testing.T) {
 	}
 	store := &blockingRenewStore{
 		Store: memory.New(), entered: make(chan struct{}), returned: make(chan struct{}),
+		allowClaimed: true,
 	}
 	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
 		RunnerOptions: sequencer.RunnerOptions{
@@ -1850,10 +2042,11 @@ type blockingMarkRunningStore struct {
 
 type blockingRenewStore struct {
 	*memory.Store
-	entered  chan struct{}
-	returned chan struct{}
-	deadline chan time.Duration
-	once     sync.Once
+	allowClaimed bool
+	entered      chan struct{}
+	returned     chan struct{}
+	deadline     chan time.Duration
+	once         sync.Once
 }
 
 type blockingFleetStore struct {
@@ -1874,7 +2067,12 @@ func (store *blockingMarkRunningStore) MarkRunning(ctx context.Context, _ sequen
 	return sequencer.AttemptRecord{}, ctx.Err()
 }
 
-func (store *blockingRenewStore) RenewLease(ctx context.Context, _ sequencer.Ownership, _ time.Time, _ time.Duration) (time.Time, error) {
+func (store *blockingRenewStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if store.allowClaimed {
+		if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+			return until, err
+		}
+	}
 	if deadline, ok := ctx.Deadline(); ok && store.deadline != nil {
 		store.deadline <- time.Until(deadline)
 	}
@@ -1958,7 +2156,10 @@ func (store *renewResultStore) MarkRunning(ctx context.Context, ownership sequen
 	return record, err
 }
 
-func (store *renewResultStore) RenewLease(context.Context, sequencer.Ownership, time.Time, time.Duration) (time.Time, error) {
+func (store *renewResultStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+		return until, err
+	}
 	return store.until, nil
 }
 
@@ -2041,7 +2242,10 @@ func (store *completionFailureStore) Complete(context.Context, sequencer.Complet
 	return store.err
 }
 
-func (store *failingRenewStore) RenewLease(context.Context, sequencer.Ownership, time.Time, time.Duration) (time.Time, error) {
+func (store *failingRenewStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+		return until, err
+	}
 	return time.Time{}, store.err
 }
 
@@ -2061,8 +2265,15 @@ func (store *leaseFailureAdmissionStore) ClaimNext(ctx context.Context, request 
 	return store.Store.ClaimNext(ctx, request)
 }
 
-func (store *leaseFailureAdmissionStore) RenewLease(context.Context, sequencer.Ownership, time.Time, time.Duration) (time.Time, error) {
-	<-store.secondClaimEntered
+func (store *leaseFailureAdmissionStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+		return until, err
+	}
+	select {
+	case <-store.secondClaimEntered:
+	case <-ctx.Done():
+		return time.Time{}, ctx.Err()
+	}
 	return time.Time{}, store.err
 }
 
@@ -2089,15 +2300,39 @@ func (store *leaseFailureRecoveryStore) RecoverExpired(ctx context.Context, now 
 	return store.Store.RecoverExpired(ctx, now)
 }
 
-func (store *leaseFailureRecoveryStore) RenewLease(context.Context, sequencer.Ownership, time.Time, time.Duration) (time.Time, error) {
-	<-store.secondRecoveryEntered
+func (store *leaseFailureRecoveryStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+		return until, err
+	}
+	select {
+	case <-store.secondRecoveryEntered:
+	case <-ctx.Done():
+		return time.Time{}, ctx.Err()
+	}
 	return time.Time{}, store.err
 }
 
-func (store *cancelingRenewStore) RenewLease(ctx context.Context, _ sequencer.Ownership, _ time.Time, _ time.Duration) (time.Time, error) {
+func (store *cancelingRenewStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+		return until, err
+	}
 	store.once.Do(func() { close(store.entered) })
 	<-ctx.Done()
 	return time.Time{}, ctx.Err()
+}
+
+// Running-lease failure fixtures permit the newly required initial ownership
+// proof. Their injected failures still occur against actual Running records.
+func renewClaimedFixture(store *memory.Store, ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, bool, error) {
+	record, err := store.Snapshot(ctx, ownership.OperationID, ownership.Version)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if record.State != sequencer.Claimed {
+		return time.Time{}, false, nil
+	}
+	until, err := store.RenewLease(ctx, ownership, now, duration)
+	return until, true, err
 }
 
 func newLeaseTrackingStore() *leaseTrackingStore {

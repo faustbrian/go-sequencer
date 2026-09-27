@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 )
+
+func internalTestChecksum(value string) string { return sequencer.ChecksumBytes([]byte(value)) }
 
 func TestStoreInternalOrderingAndMissingLatest(t *testing.T) {
 	t.Parallel()
@@ -17,7 +19,7 @@ func TestStoreInternalOrderingAndMissingLatest(t *testing.T) {
 	if latest := store.latest("missing"); latest != nil {
 		t.Fatalf("latest(missing) = %+v", latest)
 	}
-	reference := sequencer.DependencyRef{ID: "same", Version: 1, Checksum: "sum"}
+	reference := sequencer.DependencyRef{ID: "same", Version: 1, Checksum: internalTestChecksum("sum")}
 	if order := compareDependencyRefs(reference, reference); order != 0 {
 		t.Fatalf("compareDependencyRefs(equal) = %d", order)
 	}
@@ -36,7 +38,7 @@ func TestStoreRejectsOwnershipAndRetryCounterOverflow(t *testing.T) {
 			store := New()
 			identifier := key{id: "overflow", version: 1}
 			record := sequencer.Record{
-				Registration: sequencer.Registration{ID: identifier.id, Version: identifier.version, Checksum: "sum"},
+				Registration: sequencer.Registration{ID: identifier.id, Version: identifier.version, Checksum: internalTestChecksum("sum")},
 				State:        state, EligibleAt: now, UpdatedAt: now,
 			}
 			mutate(&record)
@@ -54,7 +56,7 @@ func TestStoreRejectsOwnershipAndRetryCounterOverflow(t *testing.T) {
 	}
 
 	store := New()
-	if err := store.Register(context.Background(), []sequencer.Registration{{ID: "retry-overflow", Version: 1, Checksum: "sum"}}, now); err != nil {
+	if err := store.Register(context.Background(), []sequencer.Registration{{ID: "retry-overflow", Version: 1, Checksum: internalTestChecksum("sum")}}, now); err != nil {
 		t.Fatal(err)
 	}
 	claim, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{

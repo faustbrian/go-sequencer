@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 func TestStoreReplicaRaceAuthorizesExactlyOneClaim(t *testing.T) {
@@ -18,7 +18,7 @@ func TestStoreReplicaRaceAuthorizesExactlyOneClaim(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 10, 16, 0, 0, 0, time.UTC)
 	store := memory.New()
-	registration := sequencer.Registration{ID: "race.claim", Version: 1, Checksum: "sha256:race"}
+	registration := sequencer.Registration{ID: "race.claim", Version: 1, Checksum: testChecksum("sha256:race")}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestStoreCrashFailoverFencesEveryStaleOwnerTransition(t *testing.T) {
 			now := time.Date(2026, 8, 10, 17, 0, 0, 0, time.UTC)
 			store := memory.New()
 			registration := sequencer.Registration{
-				ID: "failover." + sequencer.OperationID(crashState.String()), Version: 1, Checksum: "sha256:failover",
+				ID: "failover." + sequencer.OperationID(crashState.String()), Version: 1, Checksum: testChecksum("sha256:failover"),
 				UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
 			}
 			if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {

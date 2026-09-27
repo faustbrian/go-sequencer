@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/internal/audittext"
+	"github.com/faustbrian/go-sequencer/v2/internal/owneridentity"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -60,22 +62,28 @@ func ownershipValid(ownership sequencer.Ownership) bool {
 
 // Register inserts immutable identities and fails closed on checksum drift.
 func (store *Store) Register(ctx context.Context, registrations []sequencer.Registration, _ time.Time) error {
+	if len(registrations) > sequencer.DefaultMaxOperations {
+		return sequencer.ErrResourceLimit
+	}
 	for _, registration := range registrations {
+		if len(registration.DependencyRefs) > sequencer.DefaultMaxDependencies {
+			return sequencer.ErrResourceLimit
+		}
 		if !registration.ID.Valid() {
 			return sequencer.ErrInvalidOperation
 		}
 		if registration.Channel != "" && !sequencer.OperationID(registration.Channel).Valid() {
 			return sequencer.ErrInvalidOperation
 		}
-		if len(registration.Checksum) > sequencer.DefaultMaxChecksumBytes {
-			return sequencer.ErrResourceLimit
+		if !sequencer.ValidChecksum(registration.Checksum) {
+			return sequencer.ErrInvalidOperation
 		}
 		for _, dependency := range registration.DependencyRefs {
 			if !dependency.ID.Valid() {
 				return sequencer.ErrInvalidOperation
 			}
-			if len(dependency.Checksum) > sequencer.DefaultMaxChecksumBytes {
-				return sequencer.ErrResourceLimit
+			if !sequencer.ValidChecksum(dependency.Checksum) {
+				return sequencer.ErrInvalidOperation
 			}
 		}
 	}
@@ -89,7 +97,7 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 		if err != nil {
 			return err
 		}
-		if !registration.ID.Valid() || registration.Version == 0 || registration.Checksum == "" ||
+		if !registration.ID.Valid() || registration.Version == 0 || !sequencer.ValidChecksum(registration.Checksum) ||
 			registration.UnknownOutcome > sequencer.UnknownOutcomeReplayIdempotent ||
 			(registration.Compensates != nil && !slices.Contains(dependencyRefs, *registration.Compensates)) {
 			return sequencer.ErrInvalidOperation
@@ -188,7 +196,7 @@ WHERE operation_id = $1 AND version = $2 AND dependency_refs IS NULL`,
 
 // ClaimNext transactionally claims the first dependency-ready plan candidate.
 func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
-	if request.Owner == "" || len(request.Owner) > sequencer.DefaultMaxActorBytes || request.LeaseDuration <= 0 || (len(request.Candidates) == 0 && len(request.OperationIDs) == 0) {
+	if !owneridentity.Valid(request.Owner, sequencer.DefaultMaxActorBytes, sequencer.SanitizePersistenceText) || request.LeaseDuration <= 0 || (len(request.Candidates) == 0 && len(request.OperationIDs) == 0) {
 		return sequencer.Claim{}, sequencer.ErrInvalidOperation
 	}
 	selectedCount := len(request.Candidates)
@@ -216,8 +224,8 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		if !candidate.ID.Valid() {
 			return sequencer.Claim{}, sequencer.ErrInvalidOperation
 		}
-		if len(candidate.Checksum) > sequencer.DefaultMaxChecksumBytes {
-			return sequencer.Claim{}, sequencer.ErrResourceLimit
+		if candidate.Checksum != "" && !sequencer.ValidChecksum(candidate.Checksum) {
+			return sequencer.Claim{}, sequencer.ErrInvalidOperation
 		}
 		if candidate.Channel != "" && !sequencer.OperationID(candidate.Channel).Valid() {
 			return sequencer.Claim{}, sequencer.ErrInvalidOperation
@@ -504,10 +512,15 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	}
 	actor := firstNonEmpty(completion.Actor, completion.Owner)
 	reason := firstNonEmpty(completion.Reason, "completed")
-	if len(actor) > sequencer.DefaultMaxActorBytes || len(reason) > sequencer.DefaultMaxReasonBytes {
-		return sequencer.ErrResourceLimit
+	actor, reason, err := audittext.Prepare(actor, reason)
+	if err != nil {
+		return err
 	}
-	output, err := json.Marshal(completion.Output)
+	preparedOutput, err := sequencer.PreparePersistenceOutput(completion.Output)
+	if err != nil {
+		return err
+	}
+	output, err := json.Marshal(preparedOutput)
 	if err != nil || len(output) > sequencer.DefaultMaxOutputBytes {
 		return sequencer.ErrResourceLimit
 	}
@@ -855,6 +868,11 @@ func (store *Store) Reset(ctx context.Context, request sequencer.ResetRequest) e
 		request.Reason == "" || len(request.Reason) > sequencer.DefaultMaxReasonBytes {
 		return sequencer.ErrResetForbidden
 	}
+	actor, reason, err := audittext.Prepare(request.Actor, request.Reason)
+	if err != nil {
+		return sequencer.ErrResetForbidden
+	}
+	request.Actor, request.Reason = actor, reason
 	tx, err := store.database.Begin(ctx)
 	if err != nil {
 		return err
@@ -923,6 +941,11 @@ func (store *Store) ResolveUnknown(ctx context.Context, request sequencer.Reconc
 		request.Resolution < sequencer.ReconcileSucceeded || request.Resolution > sequencer.ReconcileFailed {
 		return sequencer.ErrReconcileForbidden
 	}
+	actor, reason, err := audittext.Prepare(request.Actor, request.Reason)
+	if err != nil {
+		return sequencer.ErrReconcileForbidden
+	}
+	request.Actor, request.Reason = actor, reason
 	version, err := toInt64(request.Version)
 	if err != nil {
 		return sequencer.ErrReconcileForbidden
@@ -1031,10 +1054,7 @@ func canonicalDependencyRefs(registration sequencer.Registration) ([]sequencer.D
 		return cmp.Compare(left.ID, right.ID)
 	})
 	for index, dependency := range dependencies {
-		if len(dependency.Checksum) > sequencer.DefaultMaxChecksumBytes {
-			return nil, sequencer.ErrResourceLimit
-		}
-		if !dependency.ID.Valid() || dependency.ID == registration.ID || dependency.Version == 0 || dependency.Checksum == "" ||
+		if !dependency.ID.Valid() || dependency.ID == registration.ID || dependency.Version == 0 || !sequencer.ValidChecksum(dependency.Checksum) ||
 			(index > 0 && dependency.ID == dependencies[index-1].ID) {
 			return nil, sequencer.ErrInvalidOperation
 		}

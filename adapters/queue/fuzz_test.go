@@ -8,17 +8,19 @@ import (
 	"strings"
 	"testing"
 
-	goqueue "github.com/faustbrian/go-sequencer/adapters/queue"
+	goqueue "github.com/faustbrian/go-sequencer/v2/adapters/queue"
 )
 
 var fuzzIdentifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
+var fuzzChecksumPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func FuzzQueueMessageJSONValidation(fuzz *testing.F) {
-	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"sha256:postal","delivery_id":"delivery"}`), "")
-	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"sha256:postal","channel":"deploy","delivery_id":"delivery"}`), "deploy")
+	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","delivery_id":"delivery"}`), "")
+	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"x","delivery_id":"delivery"}`), "")
+	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","channel":"deploy","delivery_id":"delivery"}`), "deploy")
 	fuzz.Add([]byte(`{"operation_id":"","version":0,"checksum":"","channel":"Deploy Queue","delivery_id":""}`), "deploy")
-	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"sha256:postal","delivery_id":"`+strings.Repeat("d", 256)+`"}`), "")
-	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"sha256:postal","delivery_id":"delivery","payload":"must-not-be-forwarded"}`), "")
+	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","delivery_id":"`+strings.Repeat("d", 256)+`"}`), "")
+	fuzz.Add([]byte(`{"operation_id":"postal","version":1,"checksum":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","delivery_id":"delivery","payload":"must-not-be-forwarded"}`), "")
 	fuzz.Fuzz(func(t *testing.T, encoded []byte, expectedChannel string) {
 		const maxQueueMessageBytes = 16 << 10
 		if len(encoded) > maxQueueMessageBytes || len(expectedChannel) > 512 {
@@ -48,7 +50,7 @@ func FuzzQueueMessageJSONValidation(fuzz *testing.F) {
 		}
 		err = worker.Handle(context.Background(), message)
 		valid := fuzzIdentifierPattern.MatchString(string(message.OperationID)) && message.Version != 0 &&
-			message.Checksum != "" && len(message.Checksum) <= 512 &&
+			fuzzChecksumPattern.MatchString(message.Checksum) &&
 			message.DeliveryID != "" && len(message.DeliveryID) <= 255 &&
 			((expectedChannel == "" && (message.Channel == "" || fuzzIdentifierPattern.MatchString(message.Channel))) || message.Channel == expectedChannel)
 		if valid != executor.called {

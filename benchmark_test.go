@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	goidempotency "github.com/faustbrian/go-sequencer/adapters/idempotency"
-	goqueue "github.com/faustbrian/go-sequencer/adapters/queue"
-	goretry "github.com/faustbrian/go-sequencer/adapters/retry"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	goidempotency "github.com/faustbrian/go-sequencer/v2/adapters/idempotency"
+	goqueue "github.com/faustbrian/go-sequencer/v2/adapters/queue"
+	goretry "github.com/faustbrian/go-sequencer/v2/adapters/retry"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 const (
@@ -49,7 +49,7 @@ func BenchmarkCompilePlan(benchmark *testing.B) {
 
 func BenchmarkMemoryBoundedHistory(benchmark *testing.B) {
 	store := memory.New()
-	registration := sequencer.Registration{ID: "history", Version: 1, Checksum: "sha256:history"}
+	registration := sequencer.Registration{ID: "history", Version: 1, Checksum: checksumFor("history")}
 	if err := store.Register(context.Background(), []sequencer.Registration{registration}, benchmarkNow); err != nil {
 		benchmark.Fatal(err)
 	}
@@ -100,9 +100,9 @@ func BenchmarkMemoryBoundedHistory(benchmark *testing.B) {
 func BenchmarkMemoryClaimCandidateFiltering(benchmark *testing.B) {
 	candidates := make([]sequencer.ClaimCandidate, benchmarkCandidateCount)
 	for index := range len(candidates) - 1 {
-		candidates[index] = sequencer.ClaimCandidate{ID: sequencer.OperationID(fmt.Sprintf("missing-%05d", index)), Version: 1, Checksum: "sha256:missing"}
+		candidates[index] = sequencer.ClaimCandidate{ID: sequencer.OperationID(fmt.Sprintf("missing-%05d", index)), Version: 1, Checksum: checksumFor("missing")}
 	}
-	candidates[len(candidates)-1] = sequencer.ClaimCandidate{ID: "eligible", Version: 1, Checksum: "sha256:eligible"}
+	candidates[len(candidates)-1] = sequencer.ClaimCandidate{ID: "eligible", Version: 1, Checksum: checksumFor("eligible")}
 	request := sequencer.ClaimRequest{Candidates: candidates, Owner: "benchmark", Now: benchmarkNow, LeaseDuration: time.Minute}
 
 	benchmark.ReportAllocs()
@@ -110,7 +110,7 @@ func BenchmarkMemoryClaimCandidateFiltering(benchmark *testing.B) {
 	for benchmark.Loop() {
 		benchmark.StopTimer()
 		store := memory.New()
-		if err := store.Register(context.Background(), []sequencer.Registration{{ID: "eligible", Version: 1, Checksum: "sha256:eligible"}}, benchmarkNow); err != nil {
+		if err := store.Register(context.Background(), []sequencer.Registration{{ID: "eligible", Version: 1, Checksum: checksumFor("eligible")}}, benchmarkNow); err != nil {
 			benchmark.Fatal(err)
 		}
 		benchmark.StartTimer()
@@ -127,7 +127,7 @@ func BenchmarkMemoryClaimContention(benchmark *testing.B) {
 	for benchmark.Loop() {
 		benchmark.StopTimer()
 		store := memory.New()
-		if err := store.Register(context.Background(), []sequencer.Registration{{ID: "contended", Version: 1, Checksum: "sha256:contended"}}, benchmarkNow); err != nil {
+		if err := store.Register(context.Background(), []sequencer.Registration{{ID: "contended", Version: 1, Checksum: checksumFor("contended")}}, benchmarkNow); err != nil {
 			benchmark.Fatal(err)
 		}
 		benchmark.StartTimer()
@@ -208,7 +208,7 @@ func BenchmarkMemoryRecovery(benchmark *testing.B) {
 	for index := range registrations {
 		ids[index] = sequencer.OperationID(fmt.Sprintf("recover-%04d", index))
 		registrations[index] = sequencer.Registration{
-			ID: ids[index], Version: 1, Checksum: "sha256:recover",
+			ID: ids[index], Version: 1, Checksum: checksumFor("recover"),
 			UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
 		}
 	}
@@ -242,7 +242,7 @@ func BenchmarkQueueSettlement(benchmark *testing.B) {
 	if err != nil {
 		benchmark.Fatal(err)
 	}
-	message := goqueue.Message{OperationID: "queue", Version: 1, Checksum: "sha256:queue", DeliveryID: "delivery"}
+	message := goqueue.Message{OperationID: "queue", Version: 1, Checksum: checksumFor("queue"), DeliveryID: "delivery"}
 	settlement := benchmarkSettlement{}
 	benchmark.ReportAllocs()
 	for benchmark.Loop() {
@@ -316,7 +316,7 @@ func benchmarkLayeredPlan(size, width int) []sequencer.OperationSpec {
 func benchmarkSpec(index int) sequencer.OperationSpec {
 	id := sequencer.OperationID(fmt.Sprintf("operation-%05d", index))
 	return sequencer.OperationSpec{
-		ID: id, Version: 1, Checksum: "sha256:" + string(id), Description: "deterministic benchmark operation", Channel: "benchmark",
+		ID: id, Version: 1, Checksum: checksumFor(string(id)), Description: "deterministic benchmark operation", Channel: "benchmark",
 		Policy:  sequencer.Policy{Mode: sequencer.OneTime, MaxAttempts: 1, MaxExceptions: 1, Timeout: time.Second},
 		Handler: sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) { return sequencer.Output{}, nil }),
 	}

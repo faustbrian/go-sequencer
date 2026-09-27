@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	sequencerretry "github.com/faustbrian/go-sequencer/adapters/retry"
+	sequencerretry "github.com/faustbrian/go-sequencer/v2/adapters/retry"
 )
 
 func ExampleNew() {

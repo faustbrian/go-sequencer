@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	sequencerlease "github.com/faustbrian/go-sequencer/adapters/lease"
+	sequencerlease "github.com/faustbrian/go-sequencer/v2/adapters/lease"
 )
 
 func ExampleNew() {

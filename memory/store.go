@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/internal/audittext"
+	"github.com/faustbrian/go-sequencer/v2/internal/owneridentity"
 )
 
 type key struct {
@@ -50,6 +52,9 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if len(registrations) > sequencer.DefaultMaxOperations {
+		return sequencer.ErrResourceLimit
+	}
 	if now.IsZero() {
 		return sequencer.ErrInvalidOperation
 	}
@@ -57,13 +62,10 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 	defer store.mu.Unlock()
 	normalized := make(map[key]sequencer.Registration, len(registrations))
 	for _, registration := range registrations {
-		if !registration.ID.Valid() || registration.Version == 0 || registration.Checksum == "" ||
+		if !registration.ID.Valid() || registration.Version == 0 || !sequencer.ValidChecksum(registration.Checksum) ||
 			(registration.Channel != "" && !sequencer.OperationID(registration.Channel).Valid()) ||
 			registration.UnknownOutcome > sequencer.UnknownOutcomeReplayIdempotent {
 			return sequencer.ErrInvalidOperation
-		}
-		if len(registration.Checksum) > sequencer.DefaultMaxChecksumBytes {
-			return sequencer.ErrResourceLimit
 		}
 		if len(registration.Dependencies) > 0 {
 			return sequencer.ErrUnpinnedDependency
@@ -75,10 +77,7 @@ func (store *Store) Register(ctx context.Context, registrations []sequencer.Regi
 		registration.Compensates = cloneDependencyRef(registration.Compensates)
 		slices.SortFunc(registration.DependencyRefs, compareDependencyRefs)
 		for index, dependency := range registration.DependencyRefs {
-			if len(dependency.Checksum) > sequencer.DefaultMaxChecksumBytes {
-				return sequencer.ErrResourceLimit
-			}
-			if !dependency.ID.Valid() || dependency.ID == registration.ID || dependency.Version == 0 || dependency.Checksum == "" ||
+			if !dependency.ID.Valid() || dependency.ID == registration.ID || dependency.Version == 0 || !sequencer.ValidChecksum(dependency.Checksum) ||
 				(index > 0 && dependency.ID == registration.DependencyRefs[index-1].ID) {
 				return sequencer.ErrInvalidOperation
 			}
@@ -171,7 +170,7 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 	if err := ctx.Err(); err != nil {
 		return sequencer.Claim{}, err
 	}
-	if request.Owner == "" || len(request.Owner) > sequencer.DefaultMaxActorBytes || request.LeaseDuration <= 0 || request.Now.IsZero() ||
+	if !owneridentity.Valid(request.Owner, sequencer.DefaultMaxActorBytes, sequencer.SanitizePersistenceText) || request.LeaseDuration <= 0 || request.Now.IsZero() ||
 		(len(request.Candidates) == 0 && len(request.OperationIDs) == 0) {
 		return sequencer.Claim{}, sequencer.ErrInvalidOperation
 	}
@@ -195,8 +194,8 @@ func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimReques
 		if !candidate.ID.Valid() {
 			return sequencer.Claim{}, sequencer.ErrInvalidOperation
 		}
-		if len(candidate.Checksum) > sequencer.DefaultMaxChecksumBytes {
-			return sequencer.Claim{}, sequencer.ErrResourceLimit
+		if candidate.Checksum != "" && !sequencer.ValidChecksum(candidate.Checksum) {
+			return sequencer.Claim{}, sequencer.ErrInvalidOperation
 		}
 		if candidate.Channel != "" && !sequencer.OperationID(candidate.Channel).Valid() {
 			return sequencer.Claim{}, sequencer.ErrInvalidOperation
@@ -347,10 +346,15 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if reason == "" {
 		reason = "completed"
 	}
-	if len(actor) > sequencer.DefaultMaxActorBytes || len(reason) > sequencer.DefaultMaxReasonBytes {
-		return sequencer.ErrResourceLimit
+	actor, reason, err := audittext.Prepare(actor, reason)
+	if err != nil {
+		return err
 	}
-	output, err := json.Marshal(completion.Output)
+	preparedOutput, err := sequencer.PreparePersistenceOutput(completion.Output)
+	if err != nil {
+		return err
+	}
+	output, err := json.Marshal(preparedOutput)
 	if err != nil || len(output) > sequencer.DefaultMaxOutputBytes {
 		return sequencer.ErrResourceLimit
 	}
@@ -383,7 +387,7 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	attempt.State = completion.State
 	attempt.CompletedAt = completion.At
 	attempt.ErrorDetail = sequencer.SanitizePersistenceText(completion.ErrorDetail, sequencer.DefaultMaxErrorBytes)
-	attempt.Output = cloneOutput(completion.Output)
+	attempt.Output = cloneOutput(preparedOutput)
 	if completion.RetryException {
 		current.record.RetryExceptions++
 	}
@@ -493,6 +497,11 @@ func (store *Store) Reset(ctx context.Context, request sequencer.ResetRequest) e
 		request.Reason == "" || len(request.Reason) > sequencer.DefaultMaxReasonBytes {
 		return sequencer.ErrResetForbidden
 	}
+	actor, reason, err := audittext.Prepare(request.Actor, request.Reason)
+	if err != nil {
+		return sequencer.ErrResetForbidden
+	}
+	request.Actor, request.Reason = actor, reason
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	current := store.entries[key{request.OperationID, request.Version}]
@@ -543,6 +552,11 @@ func (store *Store) ResolveUnknown(ctx context.Context, request sequencer.Reconc
 		request.Resolution < sequencer.ReconcileSucceeded || request.Resolution > sequencer.ReconcileFailed {
 		return sequencer.ErrReconcileForbidden
 	}
+	actor, reason, err := audittext.Prepare(request.Actor, request.Reason)
+	if err != nil {
+		return sequencer.ErrReconcileForbidden
+	}
+	request.Actor, request.Reason = actor, reason
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	current := store.entries[key{request.OperationID, request.Version}]

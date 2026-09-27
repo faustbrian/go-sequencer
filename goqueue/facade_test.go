@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	sequencerqueue "github.com/faustbrian/go-sequencer/adapters/queue"
-	"github.com/faustbrian/go-sequencer/goqueue"
+	sequencerqueue "github.com/faustbrian/go-sequencer/v2/adapters/queue"
+	"github.com/faustbrian/go-sequencer/v2/goqueue"
 )
 
 func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {
@@ -33,7 +33,7 @@ func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {
 		t.Fatalf("NewDispatcher(): %v", err)
 	}
 	message, err := dispatcher.Dispatch(context.Background(), goqueue.Request{
-		OperationID: "operation", Version: 1, Checksum: "sha256:operation",
+		OperationID: "operation", Version: 1, Checksum: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	})
 	if err != nil || publisher.message != message {
 		t.Fatalf("Dispatch() = %+v, %v; published = %+v", message, err, publisher.message)

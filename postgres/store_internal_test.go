@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func internalTestChecksum(value string) string { return sequencer.ChecksumBytes([]byte(value)) }
 
 func TestIntegerConversionsRejectInvalidLedgerValues(t *testing.T) {
 	t.Parallel()
@@ -53,7 +55,7 @@ func TestStoreImmediateDatabaseFailures(t *testing.T) {
 	begin := newStore(&fakeDatabase{beginErr: cause})
 	checks := []func() error{
 		func() error {
-			return begin.Register(ctx, []sequencer.Registration{{ID: "a", Version: 1, Checksum: "sum"}}, time.Now())
+			return begin.Register(ctx, []sequencer.Registration{{ID: "a", Version: 1, Checksum: internalTestChecksum("sum")}}, time.Now())
 		},
 		func() error { _, err := begin.ClaimNext(ctx, validClaimRequest()); return err },
 		func() error { _, err := begin.MarkRunning(ctx, validOwnership(), time.Now()); return err },
@@ -115,7 +117,7 @@ func TestStoreRegisterTransactionFailures(t *testing.T) {
 	t.Parallel()
 
 	cause := errors.New("failure")
-	registration := []sequencer.Registration{{ID: "a", Version: 1, Checksum: "sum"}}
+	registration := []sequencer.Registration{{ID: "a", Version: 1, Checksum: internalTestChecksum("sum")}}
 	tests := []struct {
 		name string
 		tx   *fakeTx
@@ -123,9 +125,9 @@ func TestStoreRegisterTransactionFailures(t *testing.T) {
 	}{
 		{"insert", &fakeTx{execErrs: []error{cause}}, cause},
 		{"scan", &fakeTx{rows: []pgx.Row{scriptedRow{err: cause}}}, cause},
-		{"drift", &fakeTx{rows: []pgx.Row{registrationRow("other", nil, []sequencer.DependencyRef{})}}, sequencer.ErrChecksumDrift},
-		{"definition drift", &fakeTx{rows: []pgx.Row{registrationRow("sum", []string{"other"}, nil)}}, sequencer.ErrDefinitionDrift},
-		{"commit", &fakeTx{rows: []pgx.Row{registrationRow("sum", nil, []sequencer.DependencyRef{})}, commitErr: cause}, sequencer.ErrUnknownResult},
+		{"drift", &fakeTx{rows: []pgx.Row{registrationRow(internalTestChecksum("other"), nil, []sequencer.DependencyRef{})}}, sequencer.ErrChecksumDrift},
+		{"definition drift", &fakeTx{rows: []pgx.Row{registrationRow(internalTestChecksum("sum"), []string{"other"}, nil)}}, sequencer.ErrDefinitionDrift},
+		{"commit", &fakeTx{rows: []pgx.Row{registrationRow(internalTestChecksum("sum"), nil, []sequencer.DependencyRef{})}, commitErr: cause}, sequencer.ErrUnknownResult},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -141,12 +143,12 @@ func TestStoreRegisterWritesAuditForNewIdentity(t *testing.T) {
 	t.Parallel()
 
 	tx := &fakeTx{
-		rows:     []pgx.Row{registrationRow("sum", nil, []sequencer.DependencyRef{})},
+		rows:     []pgx.Row{registrationRow(internalTestChecksum("sum"), nil, []sequencer.DependencyRef{})},
 		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("INSERT 0 1")},
 	}
 	store := newStore(&fakeDatabase{tx: tx})
 	if err := store.Register(context.Background(), []sequencer.Registration{{
-		ID: "a", Version: 1, Checksum: "sum",
+		ID: "a", Version: 1, Checksum: internalTestChecksum("sum"),
 	}}, time.Now()); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
@@ -156,13 +158,13 @@ func TestStoreRegisterComparesCanonicalDependencyOrder(t *testing.T) {
 	t.Parallel()
 
 	store := newStore(&fakeDatabase{tx: &fakeTx{
-		rows: []pgx.Row{registrationRow("sum", []string{"b", "a"}, nil)},
+		rows: []pgx.Row{registrationRow(internalTestChecksum("sum"), []string{"b", "a"}, nil)},
 	}})
 	if err := store.Register(context.Background(), []sequencer.Registration{{
-		ID: "operation", Version: 1, Checksum: "sum",
+		ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"),
 		DependencyRefs: []sequencer.DependencyRef{
-			{ID: "a", Version: 1, Checksum: "a-sum"},
-			{ID: "b", Version: 2, Checksum: "b-sum"},
+			{ID: "a", Version: 1, Checksum: internalTestChecksum("a-sum")},
+			{ID: "b", Version: 2, Checksum: internalTestChecksum("b-sum")},
 		},
 	}}, time.Now()); err != nil {
 		t.Fatalf("Register() error = %v", err)
@@ -174,24 +176,24 @@ func TestStoreRegisterRejectsInvalidAndDriftedDefinitions(t *testing.T) {
 
 	tooMany := make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies+1)
 	for index := range tooMany {
-		tooMany[index] = sequencer.DependencyRef{ID: sequencer.OperationID("dependency" + string(rune(index))), Version: 1, Checksum: "sum"}
+		tooMany[index] = sequencer.DependencyRef{ID: sequencer.OperationID("dependency" + string(rune(index))), Version: 1, Checksum: internalTestChecksum("sum")}
 	}
-	dependency := sequencer.DependencyRef{ID: "dependency", Version: 1, Checksum: "sum"}
+	dependency := sequencer.DependencyRef{ID: "dependency", Version: 1, Checksum: internalTestChecksum("sum")}
 	invalid := []sequencer.Registration{
-		{ID: "missing-version", Checksum: "sum"},
+		{ID: "missing-version", Checksum: internalTestChecksum("sum")},
 		{ID: "missing-checksum", Version: 1},
-		{ID: "invalid-unknown-policy", Version: 1, Checksum: "sum", UnknownOutcome: sequencer.UnknownOutcomePolicy(255)},
-		{ID: "legacy", Version: 1, Checksum: "sum", Dependencies: []sequencer.OperationID{"dependency"}},
-		{ID: "large", Version: 1, Checksum: "sum", DependencyRefs: tooMany},
-		{ID: "operation", Version: 1, Checksum: "sum", Compensates: &dependency},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1}}},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{
-			{ID: "dependency", Version: 1, Checksum: "a"},
-			{ID: "dependency", Version: 2, Checksum: "b"},
+		{ID: "invalid-unknown-policy", Version: 1, Checksum: internalTestChecksum("sum"), UnknownOutcome: sequencer.UnknownOutcomePolicy(255)},
+		{ID: "legacy", Version: 1, Checksum: internalTestChecksum("sum"), Dependencies: []sequencer.OperationID{"dependency"}},
+		{ID: "large", Version: 1, Checksum: internalTestChecksum("sum"), DependencyRefs: tooMany},
+		{ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"), Compensates: &dependency},
+		{ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1}}},
+		{ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{
+			{ID: "dependency", Version: 1, Checksum: internalTestChecksum("a")},
+			{ID: "dependency", Version: 2, Checksum: internalTestChecksum("b")},
 		}},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{
-			{ID: "dependency", Version: 1, Checksum: "a"},
-			{ID: "dependency", Version: 1, Checksum: "b"},
+		{ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{
+			{ID: "dependency", Version: 1, Checksum: internalTestChecksum("a")},
+			{ID: "dependency", Version: 1, Checksum: internalTestChecksum("b")},
 		}},
 	}
 	for _, registration := range invalid {
@@ -199,10 +201,29 @@ func TestStoreRegisterRejectsInvalidAndDriftedDefinitions(t *testing.T) {
 			t.Fatalf("Register(%+v) error = nil", registration)
 		}
 	}
+	if err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).Register(
+		context.Background(),
+		make([]sequencer.Registration, sequencer.DefaultMaxOperations+1),
+		time.Now(),
+	); !errors.Is(err, sequencer.ErrResourceLimit) {
+		t.Fatalf("Register(batch overflow) error = %v", err)
+	}
+	if err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).Register(
+		context.Background(),
+		[]sequencer.Registration{{
+			ID:             "operation",
+			Version:        1,
+			Checksum:       internalTestChecksum("sum"),
+			DependencyRefs: make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies+1),
+		}},
+		time.Now(),
+	); !errors.Is(err, sequencer.ErrResourceLimit) {
+		t.Fatalf("Register(dependency batch overflow) error = %v", err)
+	}
 	for _, registration := range []sequencer.Registration{
-		{ID: "Invalid", Version: 1, Checksum: "sum"},
-		{ID: "operation", Version: 1, Checksum: "sum", Channel: "Invalid Channel"},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "Invalid", Version: 1, Checksum: "sum"}}},
+		{ID: "Invalid", Version: 1, Checksum: internalTestChecksum("sum")},
+		{ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"), Channel: "Invalid Channel"},
+		{ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "Invalid", Version: 1, Checksum: internalTestChecksum("sum")}}},
 	} {
 		if err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).Register(context.Background(), []sequencer.Registration{registration}, time.Now()); !errors.Is(err, sequencer.ErrInvalidOperation) {
 			t.Fatalf("Register(malformed identifier) error = %v", err)
@@ -210,9 +231,9 @@ func TestStoreRegisterRejectsInvalidAndDriftedDefinitions(t *testing.T) {
 	}
 	for _, registration := range []sequencer.Registration{
 		{ID: "operation", Version: 1, Checksum: strings.Repeat("c", 513)},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: strings.Repeat("c", 513)}}},
+		{ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: strings.Repeat("c", 513)}}},
 	} {
-		if err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).Register(context.Background(), []sequencer.Registration{registration}, time.Now()); !errors.Is(err, sequencer.ErrResourceLimit) {
+		if err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).Register(context.Background(), []sequencer.Registration{registration}, time.Now()); !errors.Is(err, sequencer.ErrInvalidOperation) {
 			t.Fatalf("Register(checksum overflow) error = %v", err)
 		}
 	}
@@ -220,19 +241,10 @@ func TestStoreRegisterRejectsInvalidAndDriftedDefinitions(t *testing.T) {
 	dependencyIDs := make([]string, len(exactDependencies))
 	for index := range exactDependencies {
 		id := fmt.Sprintf("dependency-%03d", index)
-		exactDependencies[index] = sequencer.DependencyRef{ID: sequencer.OperationID(id), Version: 1, Checksum: "x"}
+		exactDependencies[index] = sequencer.DependencyRef{ID: sequencer.OperationID(id), Version: 1, Checksum: internalTestChecksum("x")}
 		dependencyIDs[index] = id
 	}
-	remaining := maxPersistedDefinitionBytes - len(encodeDependencyRefs(exactDependencies))
-	for index := range exactDependencies {
-		addition := min(remaining, sequencer.DefaultMaxChecksumBytes-1)
-		exactDependencies[index].Checksum += strings.Repeat("x", addition)
-		remaining -= addition
-	}
-	if remaining != 0 || len(encodeDependencyRefs(exactDependencies)) != maxPersistedDefinitionBytes {
-		t.Fatal("could not construct exact dependency definition boundary")
-	}
-	exactRegistrationChecksum := strings.Repeat("c", sequencer.DefaultMaxChecksumBytes)
+	exactRegistrationChecksum := internalTestChecksum("exact-registration")
 	if err := newStore(&fakeDatabase{tx: &fakeTx{rows: []pgx.Row{
 		registrationRow(exactRegistrationChecksum, dependencyIDs, exactDependencies),
 	}}}).Register(context.Background(), []sequencer.Registration{{
@@ -240,43 +252,28 @@ func TestStoreRegisterRejectsInvalidAndDriftedDefinitions(t *testing.T) {
 	}}, time.Now()); err != nil {
 		t.Fatalf("Register(exact dependency definition bound) error = %v", err)
 	}
-	exactCompensation := sequencer.DependencyRef{ID: "dependency", Version: 1, Checksum: strings.Repeat("x", sequencer.DefaultMaxChecksumBytes)}
+	exactCompensation := sequencer.DependencyRef{ID: "dependency", Version: 1, Checksum: internalTestChecksum("exact-compensation")}
 	if err := newStore(&fakeDatabase{tx: &fakeTx{rows: []pgx.Row{
-		registrationRawRow("sum", []string{"dependency"}, encodeDependencyRefs([]sequencer.DependencyRef{exactCompensation}), encodeDependencyRef(&exactCompensation), 0, false),
+		registrationRawRow(internalTestChecksum("sum"), []string{"dependency"}, encodeDependencyRefs([]sequencer.DependencyRef{exactCompensation}), encodeDependencyRef(&exactCompensation), 0, false),
 	}}}).Register(context.Background(), []sequencer.Registration{{
-		ID: "operation", Version: 1, Checksum: "sum",
+		ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"),
 		DependencyRefs: []sequencer.DependencyRef{exactCompensation}, Compensates: &exactCompensation,
 	}}, time.Now()); err != nil {
 		t.Fatalf("Register(exact compensation checksum bound) error = %v", err)
 	}
-	oversizedDependencies := append([]sequencer.DependencyRef(nil), exactDependencies...)
-	for index := len(oversizedDependencies) - 1; index >= 0; index-- {
-		if len(oversizedDependencies[index].Checksum) < sequencer.DefaultMaxChecksumBytes {
-			oversizedDependencies[index].Checksum += "x"
-			break
-		}
-	}
-	if len(encodeDependencyRefs(oversizedDependencies)) != maxPersistedDefinitionBytes+1 {
-		t.Fatal("could not construct oversized dependency definition")
-	}
-	if err := newStore(&fakeDatabase{tx: &fakeTx{}}).Register(context.Background(), []sequencer.Registration{{
-		ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: oversizedDependencies,
-	}}, time.Now()); !errors.Is(err, sequencer.ErrResourceLimit) {
-		t.Fatalf("Register(oversized dependency definition) error = %v", err)
-	}
 	cause := errors.New("failure")
-	registration := sequencer.Registration{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{dependency}}
+	registration := sequencer.Registration{ID: "operation", Version: 1, Checksum: internalTestChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{dependency}}
 	tests := []struct {
 		name string
 		tx   *fakeTx
 		want error
 	}{
-		{"pin legacy refs", &fakeTx{rows: []pgx.Row{registrationRow("sum", []string{"dependency"}, nil)}, execErrs: []error{nil, cause}}, cause},
-		{"malformed refs", &fakeTx{rows: []pgx.Row{registrationRawRow("sum", []string{"dependency"}, []byte(`{`), nil, 0, false)}}, sequencer.ErrDefinitionDrift},
-		{"exact ref drift", &fakeTx{rows: []pgx.Row{registrationRow("sum", []string{"dependency"}, []sequencer.DependencyRef{{ID: "dependency", Version: 2, Checksum: "sum"}})}}, sequencer.ErrDefinitionDrift},
-		{"malformed compensation", &fakeTx{rows: []pgx.Row{registrationRawRow("sum", []string{"dependency"}, encodeDependencyRefs([]sequencer.DependencyRef{dependency}), []byte(`{`), 0, false)}}, sequencer.ErrDefinitionDrift},
-		{"policy drift", &fakeTx{rows: []pgx.Row{registrationRawRow("sum", []string{"dependency"}, encodeDependencyRefs([]sequencer.DependencyRef{dependency}), nil, 1, false)}}, sequencer.ErrDefinitionDrift},
-		{"dead letter drift", &fakeTx{rows: []pgx.Row{registrationRawRow("sum", []string{"dependency"}, encodeDependencyRefs([]sequencer.DependencyRef{dependency}), nil, 0, true)}}, sequencer.ErrDefinitionDrift},
+		{"pin legacy refs", &fakeTx{rows: []pgx.Row{registrationRow(internalTestChecksum("sum"), []string{"dependency"}, nil)}, execErrs: []error{nil, cause}}, cause},
+		{"malformed refs", &fakeTx{rows: []pgx.Row{registrationRawRow(internalTestChecksum("sum"), []string{"dependency"}, []byte(`{`), nil, 0, false)}}, sequencer.ErrDefinitionDrift},
+		{"exact ref drift", &fakeTx{rows: []pgx.Row{registrationRow(internalTestChecksum("sum"), []string{"dependency"}, []sequencer.DependencyRef{{ID: "dependency", Version: 2, Checksum: internalTestChecksum("sum")}})}}, sequencer.ErrDefinitionDrift},
+		{"malformed compensation", &fakeTx{rows: []pgx.Row{registrationRawRow(internalTestChecksum("sum"), []string{"dependency"}, encodeDependencyRefs([]sequencer.DependencyRef{dependency}), []byte(`{`), 0, false)}}, sequencer.ErrDefinitionDrift},
+		{"policy drift", &fakeTx{rows: []pgx.Row{registrationRawRow(internalTestChecksum("sum"), []string{"dependency"}, encodeDependencyRefs([]sequencer.DependencyRef{dependency}), nil, 1, false)}}, sequencer.ErrDefinitionDrift},
+		{"dead letter drift", &fakeTx{rows: []pgx.Row{registrationRawRow(internalTestChecksum("sum"), []string{"dependency"}, encodeDependencyRefs([]sequencer.DependencyRef{dependency}), nil, 0, true)}}, sequencer.ErrDefinitionDrift},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -286,17 +283,17 @@ func TestStoreRegisterRejectsInvalidAndDriftedDefinitions(t *testing.T) {
 		})
 	}
 
-	newIdentity := []sequencer.Registration{{ID: "overflow", Version: ^uint(0), Checksum: "sum"}}
-	overflowTx := &fakeTx{rows: []pgx.Row{registrationRow("sum", nil, []sequencer.DependencyRef{})}, execTags: []pgconn.CommandTag{pgconn.NewCommandTag("INSERT 0 1")}}
+	newIdentity := []sequencer.Registration{{ID: "overflow", Version: ^uint(0), Checksum: internalTestChecksum("sum")}}
+	overflowTx := &fakeTx{rows: []pgx.Row{registrationRow(internalTestChecksum("sum"), nil, []sequencer.DependencyRef{})}, execTags: []pgconn.CommandTag{pgconn.NewCommandTag("INSERT 0 1")}}
 	if err := newStore(&fakeDatabase{tx: overflowTx}).Register(context.Background(), newIdentity, time.Now()); !errors.Is(err, errInvalidLedgerInteger) {
 		t.Fatalf("Register(overflow audit) error = %v", err)
 	}
 	auditTx := &fakeTx{
-		rows:     []pgx.Row{registrationRow("sum", nil, []sequencer.DependencyRef{})},
+		rows:     []pgx.Row{registrationRow(internalTestChecksum("sum"), nil, []sequencer.DependencyRef{})},
 		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("INSERT 0 1")},
 		execErrs: []error{nil, cause},
 	}
-	if err := newStore(&fakeDatabase{tx: auditTx}).Register(context.Background(), []sequencer.Registration{{ID: "a", Version: 1, Checksum: "sum"}}, time.Now()); !errors.Is(err, cause) {
+	if err := newStore(&fakeDatabase{tx: auditTx}).Register(context.Background(), []sequencer.Registration{{ID: "a", Version: 1, Checksum: internalTestChecksum("sum")}}, time.Now()); !errors.Is(err, cause) {
 		t.Fatalf("Register(audit) error = %v", err)
 	}
 }
@@ -354,13 +351,13 @@ func TestStoreClaimTransactionFailures(t *testing.T) {
 		}
 	}
 	if _, err := store.ClaimNext(context.Background(), sequencer.ClaimRequest{
-		Candidates: []sequencer.ClaimCandidate{{ID: "a", Version: ^uint(0), Checksum: "sum"}},
+		Candidates: []sequencer.ClaimCandidate{{ID: "a", Version: ^uint(0), Checksum: internalTestChecksum("sum")}},
 		Owner:      "owner", LeaseDuration: time.Minute,
 	}); !errors.Is(err, errInvalidLedgerInteger) {
 		t.Fatalf("ClaimNext(overflow) error = %v", err)
 	}
 	if _, err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).ClaimNext(context.Background(), sequencer.ClaimRequest{
-		Candidates: []sequencer.ClaimCandidate{{ID: "a", Version: 1, Checksum: "sum"}},
+		Candidates: []sequencer.ClaimCandidate{{ID: "a", Version: 1, Checksum: internalTestChecksum("sum")}},
 		Owner:      "owner", LeaseDuration: time.Nanosecond,
 	}); !errors.Is(err, sequencer.ErrInvalidLease) {
 		t.Fatalf("ClaimNext(sub-millisecond lease) error = %v", err)
@@ -368,7 +365,7 @@ func TestStoreClaimTransactionFailures(t *testing.T) {
 	overflowChecksum := validClaimRequest()
 	overflowChecksum.Candidates = []sequencer.ClaimCandidate{{ID: "a", Version: 1, Checksum: strings.Repeat("c", 513)}}
 	overflowChecksum.OperationIDs = nil
-	if _, err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).ClaimNext(context.Background(), overflowChecksum); !errors.Is(err, sequencer.ErrResourceLimit) {
+	if _, err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).ClaimNext(context.Background(), overflowChecksum); !errors.Is(err, sequencer.ErrInvalidOperation) {
 		t.Fatalf("ClaimNext(checksum overflow) error = %v", err)
 	}
 	invalidChannel := validClaimRequest()
@@ -404,7 +401,7 @@ func TestStoreClaimTransactionFailures(t *testing.T) {
 		exactBounds.Candidates[index] = sequencer.ClaimCandidate{ID: "missing"}
 	}
 	exactBounds.Candidates[0] = sequencer.ClaimCandidate{
-		ID: "a", Version: 1, Checksum: strings.Repeat("c", sequencer.DefaultMaxChecksumBytes),
+		ID: "a", Version: 1, Checksum: internalTestChecksum("exact-checksum"),
 	}
 	exactClaim, err := newStore(&fakeDatabase{tx: &fakeTx{rows: []pgx.Row{claimRow()}}}).ClaimNext(context.Background(), exactBounds)
 	if err != nil {
@@ -625,7 +622,7 @@ func TestStoreReadDecodingFailures(t *testing.T) {
 		{"malformed dependency refs", 5, []byte(`{`)},
 		{"oversized dependency refs", 5, []byte(`[]` + strings.Repeat(" ", (64<<10)+1))},
 		{"malformed compensation", 6, []byte(`{`)},
-		{"oversized compensation", 6, append(encodeDependencyRef(&sequencer.DependencyRef{ID: "a", Version: 1, Checksum: "sum"}), []byte(strings.Repeat(" ", (4<<10)+1))...)},
+		{"oversized compensation", 6, append(encodeDependencyRef(&sequencer.DependencyRef{ID: "a", Version: 1, Checksum: internalTestChecksum("sum")}), []byte(strings.Repeat(" ", (4<<10)+1))...)},
 		{"invalid unknown policy", 7, int16(2)},
 	} {
 		t.Run("snapshot "+test.name, func(t *testing.T) {
@@ -848,7 +845,7 @@ func TestSmallPostgresHelpers(t *testing.T) {
 	if _, err := decodeDependencyRefs(exactDependencies); err != nil {
 		t.Fatalf("decodeDependencyRefs(exact bound) error = %v", err)
 	}
-	exactReference := encodeDependencyRef(&sequencer.DependencyRef{ID: "a", Version: 1, Checksum: "sum"})
+	exactReference := encodeDependencyRef(&sequencer.DependencyRef{ID: "a", Version: 1, Checksum: internalTestChecksum("sum")})
 	exactReference = append(exactReference, []byte(strings.Repeat(" ", maxPersistedReferenceBytes-len(exactReference)))...)
 	if _, err := decodeDependencyRef(exactReference); err != nil {
 		t.Fatalf("decodeDependencyRef(exact bound) error = %v", err)
@@ -867,8 +864,8 @@ func TestSmallPostgresHelpers(t *testing.T) {
 		t.Fatalf("decodeDependencyRefs(null) error = %v", err)
 	}
 	unsorted := []sequencer.DependencyRef{
-		{ID: "b", Version: 1, Checksum: "b"},
-		{ID: "a", Version: 1, Checksum: "a"},
+		{ID: "b", Version: 1, Checksum: internalTestChecksum("b")},
+		{ID: "a", Version: 1, Checksum: internalTestChecksum("a")},
 	}
 	if _, err := decodeDependencyRefs(encodeDependencyRefs(unsorted)); !errors.Is(err, sequencer.ErrDefinitionDrift) {
 		t.Fatalf("decodeDependencyRefs(unsorted) error = %v", err)
@@ -879,21 +876,21 @@ func TestSmallPostgresHelpers(t *testing.T) {
 	}
 	for name, registration := range map[string]sequencer.Registration{
 		"invalid id": {
-			DependencyRefs: []sequencer.DependencyRef{{ID: "Invalid", Version: 1, Checksum: "sum"}},
+			DependencyRefs: []sequencer.DependencyRef{{ID: "Invalid", Version: 1, Checksum: internalTestChecksum("sum")}},
 		},
 		"self dependency": {
-			ID: "a", DependencyRefs: []sequencer.DependencyRef{{ID: "a", Version: 1, Checksum: "sum"}},
+			ID: "a", DependencyRefs: []sequencer.DependencyRef{{ID: "a", Version: 1, Checksum: internalTestChecksum("sum")}},
 		},
 		"missing version": {
-			DependencyRefs: []sequencer.DependencyRef{{ID: "a", Checksum: "sum"}},
+			DependencyRefs: []sequencer.DependencyRef{{ID: "a", Checksum: internalTestChecksum("sum")}},
 		},
 		"missing checksum": {
 			DependencyRefs: []sequencer.DependencyRef{{ID: "a", Version: 1}},
 		},
 		"duplicate id": {
 			DependencyRefs: []sequencer.DependencyRef{
-				{ID: "a", Version: 1, Checksum: "one"},
-				{ID: "a", Version: 2, Checksum: "two"},
+				{ID: "a", Version: 1, Checksum: internalTestChecksum("one")},
+				{ID: "a", Version: 2, Checksum: internalTestChecksum("two")},
 			},
 		},
 	} {
@@ -910,9 +907,9 @@ func TestSmallPostgresHelpers(t *testing.T) {
 	if got, err := parseState(sequencer.Blocked.String()); err != nil || got != sequencer.Blocked {
 		t.Fatalf("parseState(blocked) = %s, %v", got, err)
 	}
-	reference := &sequencer.DependencyRef{ID: "a", Version: 1, Checksum: "sum"}
+	reference := &sequencer.DependencyRef{ID: "a", Version: 1, Checksum: internalTestChecksum("sum")}
 	equal := *reference
-	different := &sequencer.DependencyRef{ID: "b", Version: 1, Checksum: "sum"}
+	different := &sequencer.DependencyRef{ID: "b", Version: 1, Checksum: internalTestChecksum("sum")}
 	for _, test := range []struct {
 		name        string
 		left, right *sequencer.DependencyRef

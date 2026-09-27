@@ -14,6 +14,7 @@
 - [Kubernetes fleet operation](kubernetes.md)
 - [Operations guide](operations.md)
 - [Security](security.md)
+  - [Threat model](security/threat-model.md)
 - [Performance](performance.md)
 - [Laravel migration](laravel-migration.md)
 - [Cookbook](cookbook.md)

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
-	"github.com/faustbrian/go-sequencer/sequencertest"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
+	"github.com/faustbrian/go-sequencer/v2/sequencertest"
 )
 
 func TestRunnerCrashAfterLocalTransactionCommitLeavesUnknownDurableOutcome(t *testing.T) {

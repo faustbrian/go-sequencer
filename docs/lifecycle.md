@@ -21,7 +21,20 @@ version fails closed.
 
 Every attempt remains visible. Audit events record state boundaries,
 ownership, fencing, actor, reason, and time. Partial reports do not erase
-allowed failures or dead letters. `rolled_back` is a legacy readable state;
+allowed failures or dead letters. Owner identities are rejected before claiming
+if persistence sanitization would change their exact bytes; credential-bearing
+or control-bearing identities are never rewritten into colliding fencing names.
+Both runner variants use one shared fenced renewal keeper from accepted claim
+through pre-handler work, callback cancellation acknowledgement, and bounded
+settlement. An initial renewal proves ownership before callback admission.
+Synchronous runners now require `LeaseStore` capability. Store implementations
+must honor their supplied contexts; renewal loss cancels execution and settlement
+and fails closed. Every keeper stops boundedly after settlement; an unresponsive
+callback never receives indefinite lease renewal or a replacement execution slot.
+Fleet attempts retain exactly their own keeper, without a second renewal worker.
+Observer enqueue and drop never wait for callback delivery; consumers needing
+an observation must synchronize explicitly with its asynchronous delivery.
+`rolled_back` is a legacy readable state;
 current compensation is a separate operation and never means the database
 returned to a historical snapshot.
 
@@ -38,6 +51,17 @@ withholds shutdown cancellation when interruption is unsafe. If it exceeds the
 bounded shutdown wait, the fleet fails, renewal stops, and Kubernetes must end
 the pod. Lease recovery records an indeterminate result and does not replay it
 unless the registered policy explicitly authorizes idempotent replay.
-Its operation timeout still bounds waiting. If the handler ignores that
+The operation timeout covers approval, condition, transaction, and handler
+callbacks together in one retained execution slot. If any callback ignores that
 deadline, a late return is persisted as indeterminate, never as a definite
-failure or success, because the external effect may have committed.
+failure or success, because the external effect may have committed. A fleet
+then fails closed without admitting replacement work into the retained handler
+slot. The process manager must terminate that instance before it can resume
+work; an in-process Go callback cannot be preempted safely. The runner waits at
+most `HandlerStopWait` after cancellation for a cooperative return before
+classifying the callback as still active. An approval that returns after its
+deadline cannot start a handler. Approval panics are contained as indeterminate
+outcomes without exposing panic values.
+Transaction-manager contexts retain their values and own cancellation while
+also inheriting the attempt deadline and cancellation. A transaction callback
+offered after cancellation cannot start operation work.

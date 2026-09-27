@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 )
 
 func TestCompilePlanUsesDeterministicTopologicalOrder(t *testing.T) {
@@ -90,7 +90,7 @@ func TestCompilePlanRejectsBrokenGraphs(t *testing.T) {
 
 	t.Run("missing dependency", func(t *testing.T) {
 		a := validSpec("a")
-		a.DependencyRefs = []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: "sum"}}
+		a.DependencyRefs = []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: checksumFor("missing")}}
 		_, err := sequencer.CompilePlan([]sequencer.OperationSpec{a}, sequencer.PlanOptions{})
 		if !errors.Is(err, sequencer.ErrMissingDependency) {
 			t.Fatalf("error = %v, want ErrMissingDependency", err)
@@ -120,7 +120,7 @@ func TestCompilePlanRequiresExactDependencyIdentity(t *testing.T) {
 
 	dependency := validSpec("dependency")
 	dependency.Version = 2
-	dependency.Checksum = "sha256:dependency-v2"
+	dependency.Checksum = checksumFor("dependency-v2")
 	dependent := validSpec("dependent")
 	dependent.DependencyRefs = []sequencer.DependencyRef{{
 		ID: dependency.ID, Version: dependency.Version, Checksum: dependency.Checksum,
@@ -131,7 +131,7 @@ func TestCompilePlanRequiresExactDependencyIdentity(t *testing.T) {
 
 	for _, mutate := range []func(*sequencer.DependencyRef){
 		func(reference *sequencer.DependencyRef) { reference.Version++ },
-		func(reference *sequencer.DependencyRef) { reference.Checksum = "sha256:wrong" },
+		func(reference *sequencer.DependencyRef) { reference.Checksum = checksumFor("wrong") },
 	} {
 		candidate := dependent
 		candidate.DependencyRefs = slices.Clone(dependent.DependencyRefs)

@@ -1,6 +1,6 @@
 # Security
 
-Operation source and checksums are deployment-controlled code. Never accept
+Operation source and canonical lowercase SHA-256 checksums are deployment-controlled code. Never accept
 arbitrary operation definitions, handler names, dependencies, or reset commands
 from an unauthenticated request. Plan and direct-store validation still bounds
 checksums, descriptions, tags, environments, and dependency definitions so a
@@ -13,7 +13,7 @@ fields contain no credentials, personal data, payloads, SQL, stack traces, or
 raw upstream errors.
 
 The PostgreSQL adapter rejects dependency-definition JSON larger than 64 KiB
-before writing it. Individual 512-byte checksum limits keep newly encoded
+before writing it. Canonical 71-byte checksum limits keep newly encoded
 compensation references below their 4 KiB persisted-record bound. The adapter
 also fails closed when stored definitions exceed either bound or stored attempt
 output exceeds the 64 KiB output limit, preventing unbounded JSON decoding of

@@ -8,7 +8,7 @@ import (
 	"errors"
 	"regexp"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 )
 
 var (
@@ -83,7 +83,7 @@ func NewDispatcher(publisher Publisher, topic string) (*Dispatcher, error) {
 // or enqueue-to-worker transaction atomicity.
 func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Message, error) {
 	if !request.OperationID.Valid() || request.Version == 0 ||
-		request.Checksum == "" || len(request.Checksum) > sequencer.DefaultMaxChecksumBytes ||
+		!sequencer.ValidChecksum(request.Checksum) ||
 		(request.Channel != "" && !channelPattern.MatchString(request.Channel)) ||
 		(dispatcher.channel != "" && request.Channel != dispatcher.channel) {
 		return Message{}, ErrInvalidAdapter
@@ -180,7 +180,7 @@ func (worker *Worker) HandleDelivery(ctx context.Context, message Message, settl
 
 func validMessage(message Message, expectedChannel string) bool {
 	if !message.OperationID.Valid() || message.Version == 0 ||
-		message.Checksum == "" || len(message.Checksum) > sequencer.DefaultMaxChecksumBytes ||
+		!sequencer.ValidChecksum(message.Checksum) ||
 		message.DeliveryID == "" || len(message.DeliveryID) > maxDeliveryIDBytes {
 		return false
 	}

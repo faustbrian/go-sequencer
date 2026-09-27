@@ -1256,7 +1256,7 @@ INSERT INTO sequencer_attempts (
 			defer wait.Done()
 			claim, claimErr := store.ClaimNext(ctx, sequencer.ClaimRequest{
 				OperationIDs: []sequencer.OperationID{registration.ID},
-				Owner:        string(rune('a' + index)), LeaseDuration: 50 * time.Millisecond,
+				Owner:        fmt.Sprintf("concurrent-owner-%02d", index), LeaseDuration: 50 * time.Millisecond,
 			})
 			if claimErr == nil {
 				winners <- claim

@@ -572,6 +572,7 @@ func TestFleetDoesNotClaimAfterLeaseFailureClosesAdmissionDuringRecovery(t *test
 	store := &leaseFailureRecoveryStore{
 		Store:                 memory.New(),
 		err:                   sequencer.ErrStaleOwner,
+		firstHandlerStarted:   firstStarted,
 		secondRecoveryEntered: make(chan struct{}),
 		releaseSecondRecovery: make(chan struct{}),
 	}
@@ -2019,6 +2020,7 @@ type leaseFailureRecoveryStore struct {
 	recoveries            int
 	secondRecoveryEntered chan struct{}
 	releaseSecondRecovery chan struct{}
+	firstHandlerStarted   <-chan struct{}
 }
 
 type cancelingRenewStore struct {
@@ -2303,6 +2305,13 @@ func (store *leaseFailureRecoveryStore) RecoverExpired(ctx context.Context, now 
 func (store *leaseFailureRecoveryStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
 	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
 		return until, err
+	}
+	// Fail a running handler during blocked recovery, not the initial lease
+	// proof or the scheduling gap between MarkRunning and callback admission.
+	select {
+	case <-store.firstHandlerStarted:
+	case <-ctx.Done():
+		return time.Time{}, ctx.Err()
 	}
 	select {
 	case <-store.secondRecoveryEntered:

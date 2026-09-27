@@ -20,6 +20,72 @@ type delayedLeaseStore struct {
 
 type nonrenewableSecurityStore struct{ sequencer.Store }
 
+type interveningRenewalStore struct{ *memory.Store }
+
+func (store *interveningRenewalStore) Complete(ctx context.Context, completion sequencer.Completion) error {
+	// Force the renewal to acquire persistence authority after the caller's
+	// sample but before Complete acquires the store lock, without a sleep.
+	record, err := store.Store.Snapshot(ctx, completion.OperationID, completion.Version)
+	if err != nil {
+		return err
+	}
+	if _, err := store.Store.RenewLease(ctx, completion.Ownership, completion.At.Add(time.Nanosecond), record.LeaseExpiresAt.Sub(completion.At)+time.Minute); err != nil {
+		return err
+	}
+	return store.Store.Complete(ctx, completion)
+}
+
+func TestRunnerAndFleetCompletionSurvivesInterveningRenewal(t *testing.T) {
+	for _, fleetMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fleet=%t", fleetMode), func(t *testing.T) {
+			spec := validSpec("timestamp.concurrent-renewal")
+			plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+			store := &interveningRenewalStore{Store: memory.New()}
+			options := sequencer.RunnerOptions{Owner: "owner"}
+			if !fleetMode {
+				runner, err := sequencer.NewRunner(plan, store, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				report, err := runner.Execute(context.Background())
+				if err != nil || report.Result != sequencer.RunSucceeded {
+					t.Fatalf("report=%+v error=%v", report, err)
+				}
+			} else {
+				completed := make(chan struct{}, 1)
+				options.Observers = []sequencer.Observer{sequencer.ObserverFunc(func(event sequencer.Event) {
+					if event.Type == sequencer.EventCompleted {
+						completed <- struct{}{}
+					}
+				})}
+				fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{RunnerOptions: options, ClaimInterval: time.Millisecond})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- fleet.Run(ctx) }()
+				select {
+				case <-completed:
+					cancel()
+					if err := <-done; err != nil {
+						t.Fatal(err)
+					}
+				case err := <-done:
+					t.Fatalf("completion rejected: %v", err)
+				case <-time.After(time.Second):
+					t.Fatal("completion missing")
+				}
+			}
+			record, err := store.Snapshot(context.Background(), spec.ID, spec.Version)
+			if err != nil || record.State != sequencer.Succeeded {
+				t.Fatalf("state=%v error=%v", record.State, err)
+			}
+		})
+	}
+}
+
 type completionWinsRenewalStore struct {
 	*memory.Store
 	renewals                     atomic.Int32

@@ -14,6 +14,8 @@
 - Fail a fleet closed when an in-process handler remains active beyond its
   operation deadline, preserving the unknown outcome without admitting
   replacement work into the retained execution slot.
+- Keep memory-store transitions monotonic across concurrent lease renewals
+  without rejecting valid running or completion updates.
 - Apply the same attempt deadline and retained-slot protection to approval,
   condition, transaction, and handler callbacks; contain approval panics and
   prevent late approvals from starting handlers.

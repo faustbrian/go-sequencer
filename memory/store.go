@@ -270,8 +270,11 @@ func (store *Store) MarkRunning(ctx context.Context, ownership sequencer.Ownersh
 	if err != nil {
 		return sequencer.AttemptRecord{}, err
 	}
-	if now.IsZero() || now.Before(current.record.UpdatedAt) {
+	if now.IsZero() || now.Before(current.transitionBoundary()) {
 		return sequencer.AttemptRecord{}, sequencer.ErrInvalidOperation
+	}
+	if now.Before(current.record.UpdatedAt) {
+		now = current.record.UpdatedAt
 	}
 	if !now.Before(current.record.LeaseExpiresAt) {
 		return sequencer.AttemptRecord{}, sequencer.ErrStaleOwner
@@ -367,8 +370,11 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	if current.record.State != from {
 		return sequencer.ErrInvalidTransition
 	}
-	if completion.At.IsZero() || completion.At.Before(current.record.UpdatedAt) {
+	if completion.At.IsZero() || completion.At.Before(current.transitionBoundary()) {
 		return sequencer.ErrInvalidOperation
+	}
+	if completion.At.Before(current.record.UpdatedAt) {
+		completion.At = current.record.UpdatedAt
 	}
 	if !completion.At.Before(current.record.LeaseExpiresAt) {
 		return sequencer.ErrStaleOwner
@@ -619,6 +625,16 @@ func (store *Store) owned(ownership sequencer.Ownership) (*entry, error) {
 		return nil, fmt.Errorf("%w: %s", sequencer.ErrStaleOwner, ownership.OperationID)
 	}
 	return current, nil
+}
+
+// transitionBoundary excludes lease-only heartbeat updates. Audit is append-only
+// and retains the latest actual transition; synthetic entries without audit
+// conservatively retain the projection's timestamp as their boundary.
+func (current *entry) transitionBoundary() time.Time {
+	if len(current.audit) == 0 {
+		return current.record.UpdatedAt
+	}
+	return current.audit[len(current.audit)-1].At
 }
 
 func (current *entry) appendAudit(from, to sequencer.State, at time.Time, actor, reason string) {

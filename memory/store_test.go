@@ -141,6 +141,50 @@ func TestStoreFailsClosedOnChecksumDriftAndRecoversExpiredClaim(t *testing.T) {
 	}
 }
 
+func TestLiveTransitionTimestampSurvivesInterveningRenewal(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	for _, transition := range []string{"mark", "complete"} {
+		t.Run(transition, func(t *testing.T) {
+			store := memory.New()
+			register(t, store, "timestamp", "sha256:timestamp", base)
+			claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{OperationIDs: []sequencer.OperationID{"timestamp"}, Owner: "owner", Now: base, LeaseDuration: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if transition == "complete" {
+				if _, err = store.MarkRunning(ctx, claim.Ownership(), base.Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sampled := base.Add(2 * time.Second)
+			renewed := base.Add(3 * time.Second)
+			if _, err = store.RenewLease(ctx, claim.Ownership(), renewed, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if transition == "mark" {
+				_, err = store.MarkRunning(ctx, claim.Ownership(), sampled)
+			} else {
+				err = store.Complete(ctx, sequencer.Completion{Ownership: claim.Ownership(), State: sequencer.Succeeded, At: sampled})
+			}
+			if err != nil {
+				t.Fatalf("sampled transition rejected after renewal: %v", err)
+			}
+			record, _ := store.Snapshot(ctx, "timestamp", 1)
+			audit, _ := store.Audit(ctx, "timestamp", 1, 10)
+			if !record.UpdatedAt.Equal(renewed) || !audit[len(audit)-1].At.Equal(renewed) {
+				t.Fatal("transition timestamp regressed")
+			}
+			if transition == "complete" {
+				history, _ := store.History(ctx, "timestamp", 1, 10)
+				if !history[0].CompletedAt.Equal(renewed) {
+					t.Fatal("completion history timestamp regressed")
+				}
+			}
+		})
+	}
+}
+
 func TestStoreRenewsOnlyTheCurrentOwnedLease(t *testing.T) {
 	t.Parallel()
 

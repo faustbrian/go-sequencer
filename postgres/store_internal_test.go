@@ -154,6 +154,51 @@ func TestStoreRegisterWritesAuditForNewIdentity(t *testing.T) {
 	}
 }
 
+func TestStoreRegisterAcceptsExactOperationBatchLimit(t *testing.T) {
+	t.Parallel()
+
+	registrations := make([]sequencer.Registration, sequencer.DefaultMaxOperations)
+	checksum := internalTestChecksum("sum")
+	for index := range registrations {
+		registrations[index] = sequencer.Registration{
+			ID: sequencer.OperationID(fmt.Sprintf("operation-%05d", index)), Version: 1, Checksum: checksum,
+		}
+	}
+	beginReached := errors.New("database begin reached")
+	store := newStore(&fakeDatabase{beginErr: beginReached})
+	if err := store.Register(context.Background(), registrations, time.Now()); !errors.Is(err, beginReached) {
+		t.Fatalf("Register(exact operation batch limit) error = %v, want database begin", err)
+	}
+}
+
+func TestStoreRegisterAcceptsExactEncodedDependencyLimit(t *testing.T) {
+	t.Parallel()
+
+	dependencies := make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies)
+	checksum := internalTestChecksum("sum")
+	for index := range dependencies {
+		dependencies[index] = sequencer.DependencyRef{
+			ID: sequencer.OperationID(fmt.Sprintf("dependency-%03d", index)), Version: 1, Checksum: checksum,
+		}
+	}
+	remaining := maxPersistedDefinitionBytes - len(encodeDependencyRefs(dependencies))
+	for index := range dependencies {
+		padding := min(remaining, 255-len(dependencies[index].ID))
+		dependencies[index].ID += sequencer.OperationID(strings.Repeat("x", padding))
+		remaining -= padding
+	}
+	if size := len(encodeDependencyRefs(dependencies)); size != maxPersistedDefinitionBytes {
+		t.Fatalf("encoded dependency size = %d, want %d", size, maxPersistedDefinitionBytes)
+	}
+	execReached := errors.New("database insert reached")
+	store := newStore(&fakeDatabase{tx: &fakeTx{execErrs: []error{execReached}}})
+	if err := store.Register(context.Background(), []sequencer.Registration{{
+		ID: "operation", Version: 1, Checksum: checksum, DependencyRefs: dependencies,
+	}}, time.Now()); !errors.Is(err, execReached) {
+		t.Fatalf("Register(exact encoded dependency limit) error = %v, want database insert", err)
+	}
+}
+
 func TestStoreRegisterComparesCanonicalDependencyOrder(t *testing.T) {
 	t.Parallel()
 

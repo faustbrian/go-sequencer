@@ -3,7 +3,6 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -356,10 +355,6 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 	preparedOutput, err := sequencer.PreparePersistenceOutput(completion.Output)
 	if err != nil {
 		return err
-	}
-	output, err := json.Marshal(preparedOutput)
-	if err != nil || len(output) > sequencer.DefaultMaxOutputBytes {
-		return sequencer.ErrResourceLimit
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()

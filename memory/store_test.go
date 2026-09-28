@@ -472,6 +472,33 @@ func TestStoreRejectsEveryInvalidRegistrationBoundaryAtomically(t *testing.T) {
 	}
 }
 
+func TestStoreRegisterAcceptsExactOperationLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 12, 30, 0, 0, time.UTC)
+	registrations := make([]sequencer.Registration, sequencer.DefaultMaxOperations)
+	for index := range registrations {
+		registrations[index] = sequencer.Registration{
+			ID:       sequencer.OperationID(fmt.Sprintf("operation-%d", index)),
+			Version:  1,
+			Checksum: testChecksum("same-definition"),
+		}
+	}
+
+	store := memory.New()
+	if err := store.Register(ctx, registrations, now); err != nil {
+		t.Fatalf("Register(exact operation limit) error = %v", err)
+	}
+	for _, index := range []int{0, len(registrations) - 1} {
+		registration := registrations[index]
+		record, err := store.Snapshot(ctx, registration.ID, registration.Version)
+		if err != nil || record.ID != registration.ID || record.State != sequencer.Eligible {
+			t.Fatalf("Snapshot(%s) = %+v, %v", registration.ID, record, err)
+		}
+	}
+}
+
 func TestStoreRegistrationComparesCompensationPresenceAndIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -846,9 +873,16 @@ func TestStoreCompleteBoundsAuditMetadataWithoutChangingState(t *testing.T) {
 	}{
 		{name: "actor overflow", actor: strings.Repeat("a", sequencer.DefaultMaxActorBytes+1), reason: "completed"},
 		{name: "reason overflow", actor: "operator", reason: strings.Repeat("r", sequencer.DefaultMaxReasonBytes+1)},
-		{name: "encoded output overflow", actor: "operator", reason: "completed", output: sequencer.Output{
+		{name: "metadata value overflow", actor: "operator", reason: "completed", output: sequencer.Output{
 			Metadata: map[string]string{"large": strings.Repeat("v", sequencer.DefaultMaxOutputBytes)},
 		}},
+		{name: "encoded output overflow", actor: "operator", reason: "completed", output: func() sequencer.Output {
+			metadata := make(map[string]string, 17)
+			for index := range 17 {
+				metadata[fmt.Sprintf("key-%d", index)] = strings.Repeat("v", 4_096)
+			}
+			return sequencer.Output{Metadata: metadata}
+		}()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store, claim := newRunning()

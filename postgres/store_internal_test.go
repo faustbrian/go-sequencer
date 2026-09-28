@@ -543,6 +543,14 @@ func TestStoreCompleteTransactionFailures(t *testing.T) {
 	if err := store.Complete(context.Background(), large); !errors.Is(err, sequencer.ErrResourceLimit) {
 		t.Fatalf("Complete(output) error = %v", err)
 	}
+	largeEncoded := validCompletion()
+	largeEncoded.Output.Metadata = make(map[string]string, 17)
+	for index := range 17 {
+		largeEncoded.Output.Metadata[fmt.Sprintf("key-%d", index)] = strings.Repeat("v", 4_096)
+	}
+	if err := newStore(&fakeDatabase{beginErr: errors.New("unexpected database call")}).Complete(context.Background(), largeEncoded); !errors.Is(err, sequencer.ErrResourceLimit) {
+		t.Fatalf("Complete(encoded output overflow) error = %v", err)
+	}
 	for _, completion := range []sequencer.Completion{
 		func() sequencer.Completion {
 			completion := validCompletion()

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	sequenceridempotency "github.com/faustbrian/go-sequencer/adapters/idempotency"
+	sequenceridempotency "github.com/faustbrian/go-sequencer/v2/adapters/idempotency"
 )
 
 func ExampleNew() {

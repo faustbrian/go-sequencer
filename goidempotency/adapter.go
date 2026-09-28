@@ -1,6 +1,6 @@
 // Package goidempotency provides the retained Sequencer idempotency adapter.
 //
-// Deprecated: use github.com/faustbrian/go-sequencer/adapters/idempotency.
+// Deprecated: use github.com/faustbrian/go-sequencer/v2/adapters/idempotency.
 // This package remains supported for the longer of 180 days after successor
 // public availability and two subsequently published stable minor releases.
 package goidempotency
@@ -9,7 +9,7 @@ import (
 	"context"
 	"time"
 
-	adapter "github.com/faustbrian/go-sequencer/adapters/idempotency"
+	adapter "github.com/faustbrian/go-sequencer/v2/adapters/idempotency"
 )
 
 const (

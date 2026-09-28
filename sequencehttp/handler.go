@@ -11,11 +11,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"github.com/faustbrian/go-sequencer"
+	"github.com/faustbrian/go-sequencer/v2"
 )
 
 const maxRequestBytes = 8 << 10
+
+// MaxResponseBytes bounds one pre-encoded administrative inspection response.
+const MaxResponseBytes = 1 << 20
 
 // ErrInvalidHandler reports missing administrative dependencies.
 var ErrInvalidHandler = errors.New("sequencer/sequencehttp: invalid handler")
@@ -42,9 +46,15 @@ type ResetRequest struct {
 	Reason      string `json:"reason"`
 }
 
-// Controller owns inspection and execution semantics.
+// Inspection is one pre-encoded JSON administrative response. Controllers
+// retain ownership and must not mutate it until Inspect handling returns.
+type Inspection []byte
+
+// Controller owns inspection and execution semantics. Inspect must return
+// pre-encoded UTF-8 JSON so the handler can reject oversized results before
+// parsing or copying them.
 type Controller interface {
-	Inspect(context.Context, string, uint) (any, error)
+	Inspect(context.Context, string, uint) (Inspection, error)
 	Execute(context.Context) error
 	Reset(context.Context, ResetRequest) error
 	Reconcile(context.Context, sequencer.ReconcileRequest) error
@@ -122,10 +132,14 @@ func (handler *Handler) inspect(response http.ResponseWriter, request *http.Requ
 		writeError(response, http.StatusNotFound)
 		return
 	}
+	if len(result) == 0 || len(result) > MaxResponseBytes || !utf8.Valid(result) || !json.Valid(result) {
+		writeError(response, http.StatusInternalServerError)
+		return
+	}
 	response.Header().Set("Content-Type", "application/json")
-	// Headers are already committed once encoding starts, so a write failure
-	// cannot be converted into a second HTTP response.
-	_ = json.NewEncoder(response).Encode(result)
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	// #nosec G705 -- UTF-8 JSON is validated and bounded above; nosniff prevents HTML interpretation while preserving controller-owned bytes.
+	_, _ = response.Write(result)
 }
 
 func (handler *Handler) reset(response http.ResponseWriter, request *http.Request) {

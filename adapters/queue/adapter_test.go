@@ -2,14 +2,16 @@ package sequencerqueue_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	goqueue "github.com/faustbrian/go-sequencer/adapters/queue"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	goqueue "github.com/faustbrian/go-sequencer/v2/adapters/queue"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 func TestDispatcherPublishesIdentityOnlyMessage(t *testing.T) {
@@ -21,7 +23,7 @@ func TestDispatcherPublishesIdentityOnlyMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	message, err := dispatcher.Dispatch(context.Background(), goqueue.Request{
-		OperationID: "postal.backfill", Version: 2, Checksum: "sha256:abc",
+		OperationID: "postal.backfill", Version: 2, Checksum: queueChecksum("abc"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +41,7 @@ func TestChannelBoundDispatcherAndWorkerRejectCrossChannelMessages(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := goqueue.Request{OperationID: "a", Version: 1, Checksum: "sum", Channel: "maintenance"}
+	request := goqueue.Request{OperationID: "a", Version: 1, Checksum: queueChecksum("sum"), Channel: "maintenance"}
 	if _, err := dispatcher.Dispatch(context.Background(), request); !errors.Is(err, goqueue.ErrInvalidAdapter) {
 		t.Fatalf("Dispatch(channel mismatch) error = %v", err)
 	}
@@ -89,7 +91,7 @@ func TestDispatcherPreservesDeliveryIdentityWhenPublishOutcomeIsUnknown(t *testi
 		t.Fatal(err)
 	}
 	message, err := dispatcher.Dispatch(context.Background(), goqueue.Request{
-		OperationID: "postal.backfill", Version: 2, Checksum: "sha256:abc",
+		OperationID: "postal.backfill", Version: 2, Checksum: queueChecksum("abc"),
 	})
 	if !errors.Is(err, goqueue.ErrPublishOutcomeUnknown) || !errors.Is(err, cause) {
 		t.Fatalf("Dispatch() error = %v", err)
@@ -107,7 +109,7 @@ func TestWorkerDelegatesRedeliveryToDurableExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message := goqueue.Message{OperationID: "a", Version: 1, Checksum: "sha256:a", DeliveryID: "delivery"}
+	message := goqueue.Message{OperationID: "a", Version: 1, Checksum: queueChecksum("a"), DeliveryID: "delivery"}
 	if err := worker.Handle(context.Background(), message); !errors.Is(err, sequencer.ErrNoEligibleOperation) {
 		t.Fatalf("Handle() error = %v", err)
 	}
@@ -119,7 +121,7 @@ func TestWorkerDelegatesRedeliveryToDurableExecutor(t *testing.T) {
 func TestWorkerSettlesOnlyConfirmedExecutionOutcomes(t *testing.T) {
 	t.Parallel()
 
-	message := goqueue.Message{OperationID: "a", Version: 1, Checksum: "sha256:a", DeliveryID: "delivery"}
+	message := goqueue.Message{OperationID: "a", Version: 1, Checksum: queueChecksum("a"), DeliveryID: "delivery"}
 	tests := []struct {
 		name            string
 		executionErr    error
@@ -153,7 +155,7 @@ func TestWorkerSettlesOnlyConfirmedExecutionOutcomes(t *testing.T) {
 func TestWorkerLeavesDeliveryUnsettledWhenSettlementCannotBeConfirmed(t *testing.T) {
 	t.Parallel()
 
-	message := goqueue.Message{OperationID: "a", Version: 1, Checksum: "sha256:a", DeliveryID: "delivery"}
+	message := goqueue.Message{OperationID: "a", Version: 1, Checksum: queueChecksum("a"), DeliveryID: "delivery"}
 	settlementErr := errors.New("settlement unavailable")
 	tests := []struct {
 		name         string
@@ -184,7 +186,7 @@ func TestWorkerRedeliveryCannotRepeatCompletedLedgerOperation(t *testing.T) {
 	store := memory.New()
 	calls := 0
 	spec := sequencer.OperationSpec{
-		ID: "queue.redelivery", Version: 1, Checksum: "sha256:queue-redelivery",
+		ID: "queue.redelivery", Version: 1, Checksum: queueChecksum("queue-redelivery"),
 		Description: "prove redelivery fencing", Channel: "queue",
 		Policy: sequencer.Policy{Mode: sequencer.OneTime, MaxAttempts: 1, MaxExceptions: 1, Timeout: time.Second},
 		Handler: sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
@@ -224,7 +226,7 @@ func TestWorkerLostAcknowledgementRedeliveryDoesNotRepeatCommittedOperation(t *t
 	store := memory.New()
 	calls := 0
 	spec := sequencer.OperationSpec{
-		ID: "queue.ack-lost", Version: 1, Checksum: "sha256:queue-ack-lost",
+		ID: "queue.ack-lost", Version: 1, Checksum: queueChecksum("queue-ack-lost"),
 		Description: "prove queue settlement follows durable completion", Channel: "queue",
 		Policy: sequencer.Policy{Mode: sequencer.OneTime, MaxAttempts: 1, MaxExceptions: 1, Timeout: time.Second},
 		Handler: sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
@@ -277,30 +279,31 @@ func TestAdaptersRejectInvalidInputAndPropagateTransportErrors(t *testing.T) {
 	publisher := &publisherStub{err: errors.New("publish")}
 	dispatcher, _ := goqueue.NewDispatcher(publisher, "topic")
 	for _, request := range []goqueue.Request{
-		{Version: 1, Checksum: "sum"},
-		{OperationID: "a", Checksum: "sum"},
+		{Version: 1, Checksum: queueChecksum("sum")},
+		{OperationID: "a", Checksum: queueChecksum("sum")},
 		{OperationID: "a", Version: 1},
+		{OperationID: "a", Version: 1, Checksum: "sha256:not-a-digest"},
 	} {
 		if _, err := dispatcher.Dispatch(context.Background(), request); !errors.Is(err, goqueue.ErrInvalidAdapter) {
 			t.Fatalf("Dispatch(%+v) error = %v", request, err)
 		}
 	}
-	if _, err := dispatcher.Dispatch(context.Background(), goqueue.Request{OperationID: "a", Version: 1, Checksum: "sum"}); !errors.Is(err, publisher.err) {
+	if _, err := dispatcher.Dispatch(context.Background(), goqueue.Request{OperationID: "a", Version: 1, Checksum: queueChecksum("sum")}); !errors.Is(err, publisher.err) {
 		t.Fatalf("Dispatch(publish) error = %v", err)
 	}
 	if _, err := goqueue.NewWorker(nil); !errors.Is(err, goqueue.ErrInvalidAdapter) {
 		t.Fatalf("NewWorker(nil) error = %v", err)
 	}
 	worker, _ := goqueue.NewWorker(&executorStub{})
-	valid := goqueue.Message{OperationID: "a", Version: 1, Checksum: "sum", DeliveryID: "delivery"}
+	valid := goqueue.Message{OperationID: "a", Version: 1, Checksum: queueChecksum("sum"), DeliveryID: "delivery"}
 	if disposition, err := worker.HandleDelivery(context.Background(), valid, nil); disposition != goqueue.Unsettled || !errors.Is(err, goqueue.ErrInvalidAdapter) {
 		t.Fatalf("HandleDelivery(nil settlement) = %v, %v", disposition, err)
 	}
 	for _, message := range []goqueue.Message{
-		{Version: 1, Checksum: "sum", DeliveryID: "delivery"},
-		{OperationID: "a", Checksum: "sum", DeliveryID: "delivery"},
+		{Version: 1, Checksum: queueChecksum("sum"), DeliveryID: "delivery"},
+		{OperationID: "a", Checksum: queueChecksum("sum"), DeliveryID: "delivery"},
 		{OperationID: "a", Version: 1, DeliveryID: "delivery"},
-		{OperationID: "a", Version: 1, Checksum: "sum"},
+		{OperationID: "a", Version: 1, Checksum: queueChecksum("sum")},
 	} {
 		if err := worker.Handle(context.Background(), message); !errors.Is(err, goqueue.ErrInvalidAdapter) {
 			t.Fatalf("Handle(%+v) error = %v", message, err)
@@ -320,7 +323,7 @@ func TestQueueCommandsEnforceFieldBounds(t *testing.T) {
 		maxDeliveryIDBytes  = 255
 	)
 	exactID := sequencer.OperationID(strings.Repeat("a", maxOperationIDBytes))
-	exactChecksum := strings.Repeat("c", maxChecksumBytes)
+	exactChecksum := queueChecksum("exact")
 	dispatcher, err := goqueue.NewDispatcher(&publisherStub{}, "topic")
 	if err != nil {
 		t.Fatal(err)
@@ -331,8 +334,8 @@ func TestQueueCommandsEnforceFieldBounds(t *testing.T) {
 		t.Fatalf("Dispatch(exact bounds) error = %v", err)
 	}
 	for name, request := range map[string]goqueue.Request{
-		"operation id overflow": {OperationID: sequencer.OperationID(strings.Repeat("a", maxOperationIDBytes+1)), Version: 1, Checksum: "sum"},
-		"invalid operation id":  {OperationID: "invalid operation", Version: 1, Checksum: "sum"},
+		"operation id overflow": {OperationID: sequencer.OperationID(strings.Repeat("a", maxOperationIDBytes+1)), Version: 1, Checksum: queueChecksum("sum")},
+		"invalid operation id":  {OperationID: "invalid operation", Version: 1, Checksum: queueChecksum("sum")},
 		"checksum overflow":     {OperationID: "a", Version: 1, Checksum: strings.Repeat("c", maxChecksumBytes+1)},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -355,9 +358,9 @@ func TestQueueCommandsEnforceFieldBounds(t *testing.T) {
 		t.Fatalf("Handle(exact bounds) = %+v, %v", executor.message, err)
 	}
 	for name, message := range map[string]goqueue.Message{
-		"operation id overflow": {OperationID: sequencer.OperationID(strings.Repeat("a", maxOperationIDBytes+1)), Version: 1, Checksum: "sum", DeliveryID: "delivery"},
+		"operation id overflow": {OperationID: sequencer.OperationID(strings.Repeat("a", maxOperationIDBytes+1)), Version: 1, Checksum: queueChecksum("sum"), DeliveryID: "delivery"},
 		"checksum overflow":     {OperationID: "a", Version: 1, Checksum: strings.Repeat("c", maxChecksumBytes+1), DeliveryID: "delivery"},
-		"delivery id overflow":  {OperationID: "a", Version: 1, Checksum: "sum", DeliveryID: strings.Repeat("d", maxDeliveryIDBytes+1)},
+		"delivery id overflow":  {OperationID: "a", Version: 1, Checksum: queueChecksum("sum"), DeliveryID: strings.Repeat("d", maxDeliveryIDBytes+1)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			executor.message = goqueue.Message{}
@@ -366,6 +369,10 @@ func TestQueueCommandsEnforceFieldBounds(t *testing.T) {
 			}
 		})
 	}
+}
+
+func queueChecksum(value string) string {
+	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(value)))
 }
 
 type publisherStub struct {

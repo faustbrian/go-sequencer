@@ -3,7 +3,7 @@
 `adapters/queue.Dispatcher` publishes operation ID, version, checksum, and a
 delivery identity. It does not serialize handler payloads, dependencies,
 transactions, or secrets. Operation IDs use the 255-byte sequencer identifier grammar;
-checksums are limited to 512 bytes; delivery identities are limited to 255
+checksums are exactly 71 bytes (`sha256:` plus 64 lowercase hexadecimal digits); delivery identities are limited to 255
 bytes. The application adapts this narrow publisher to queue and must apply a
 bounded transport decoder before constructing a message.
 

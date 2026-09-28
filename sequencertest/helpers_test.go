@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
-	"github.com/faustbrian/go-sequencer/sequencertest"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
+	"github.com/faustbrian/go-sequencer/v2/sequencertest"
 )
 
 func TestClockAndOperationAreDeterministic(t *testing.T) {
@@ -61,7 +61,7 @@ func TestFaultStoreForwardsEveryStoreBoundary(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	store := sequencertest.NewFaultStore(memory.New(), sequencertest.Faults{})
-	registration := sequencer.Registration{ID: "a", Version: 1, Checksum: "sum"}
+	registration := sequencer.Registration{ID: "a", Version: 1, Checksum: sequencer.ChecksumBytes([]byte("a"))}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}

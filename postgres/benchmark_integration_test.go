@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	sequencerpostgres "github.com/faustbrian/go-sequencer/postgres"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	sequencerpostgres "github.com/faustbrian/go-sequencer/v2/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
@@ -29,13 +29,13 @@ func BenchmarkPostgresStore(benchmark *testing.B) {
 	if err != nil {
 		benchmark.Fatal(err)
 	}
-	registration := sequencer.Registration{ID: "benchmark.claim", Version: 1, Checksum: "sha256:benchmark-claim"}
+	registration := sequencer.Registration{ID: "benchmark.claim", Version: 1, Checksum: testChecksum("sha256:benchmark-claim")}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, time.Unix(1, 0)); err != nil {
 		benchmark.Fatal(err)
 	}
 	candidates := make([]sequencer.ClaimCandidate, postgresBenchmarkCandidates)
 	for index := range len(candidates) - 1 {
-		candidates[index] = sequencer.ClaimCandidate{ID: sequencer.OperationID(fmt.Sprintf("missing-%04d", index)), Version: 1, Checksum: "sha256:missing"}
+		candidates[index] = sequencer.ClaimCandidate{ID: sequencer.OperationID(fmt.Sprintf("missing-%04d", index)), Version: 1, Checksum: testChecksum("sha256:missing")}
 	}
 	candidates[len(candidates)-1] = sequencer.ClaimCandidate{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum}
 	request := sequencer.ClaimRequest{Candidates: candidates, Owner: "benchmark", LeaseDuration: time.Minute}
@@ -54,7 +54,7 @@ func BenchmarkPostgresStore(benchmark *testing.B) {
 		}
 	})
 
-	historyRegistration := sequencer.Registration{ID: "benchmark.history", Version: 1, Checksum: "sha256:benchmark-history"}
+	historyRegistration := sequencer.Registration{ID: "benchmark.history", Version: 1, Checksum: testChecksum("sha256:benchmark-history")}
 	if err := store.Register(ctx, []sequencer.Registration{historyRegistration}, time.Unix(1, 0)); err != nil {
 		benchmark.Fatal(err)
 	}

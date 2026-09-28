@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	sequencerpostgres "github.com/faustbrian/go-sequencer/postgres"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	sequencerpostgres "github.com/faustbrian/go-sequencer/v2/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -98,7 +98,7 @@ func TestKubernetesLifecycleHelper(t *testing.T) {
 
 func kubernetesOperationSpec(id sequencer.OperationID, version uint, behavior string, termination context.Context, started *atomic.Uint64) sequencer.OperationSpec {
 	return sequencer.OperationSpec{
-		ID: id, Version: version, Checksum: fmt.Sprintf("sha256:kubernetes-v%d", version),
+		ID: id, Version: version, Checksum: checksumFor(fmt.Sprintf("kubernetes-v%d", version)),
 		Description: "Kubernetes lifecycle proof operation", Channel: "kubernetes",
 		Policy: sequencer.Policy{
 			Mode: sequencer.OneTime, MaxAttempts: 3, MaxExceptions: 3,

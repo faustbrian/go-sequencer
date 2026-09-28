@@ -1,12 +1,14 @@
 # API
 
-`OperationSpec` contains stable identity, version, checksum, description, tags,
+`OperationSpec` contains stable identity, version, a canonical lowercase
+`sha256:` checksum, description, tags,
 channel, exact dependency references, environments, execution policy, an
 optional exact `Compensates` reference, a condition, and a handler.
 `NewOperation` validates and defensively freezes those definitions. A
 compensation reference must also be one of the operation's dependencies.
 `OperationID.Valid` exposes the same lowercase 255-byte identifier grammar to
-stores and transport adapters. Checksums are limited to 512 bytes,
+stores and transport adapters. Checksums are exactly 71 bytes: `sha256:` followed
+by 64 lowercase hexadecimal digits. Definitions limit
 descriptions to 4 KiB, and individual tags and environment selectors to 255
 bytes; tag and environment collections are each limited to 64 entries.
 
@@ -14,9 +16,16 @@ bytes; tag and environment collections are each limited to 64 entries.
 cycles, and resource-limit violations. `Plan.IDs`, `Plan.Operations`, and
 `Plan.Operation` return defensive copies in deterministic order.
 
-`NewRunner` and `NewFleet` retain borrowed references to the compiled plan,
+`NewRunner` requires fenced `LeaseStore` renewal even though its parameter retains
+the historical `Store` signature; nonrenewable stores fail before registration
+or claims. `NewRunner` and `NewFleet` retain borrowed references to the compiled plan,
 store, clock, transaction manager, approver, operation handlers, conditions,
-and observers for the lifetime of the returned runner or fleet. Callers own
+and observers for the lifetime of the returned runner or fleet. Observer
+delivery is best-effort through one worker and a bounded queue per observer,
+is panic-isolated, and receives only stable error classifications.
+`RunnerOptions.HandlerStopWait` explicitly bounds the
+post-cancellation acknowledgement window; zero selects the documented
+`DefaultHandlerStopWait`. Callers own
 those collaborators and their cleanup, must keep them valid while `Execute`
 or `Run` is active, and must synchronize any mutable collaborator state for
 every documented concurrent call. In particular, a fleet may invoke handlers
@@ -88,3 +97,8 @@ The actor must exactly match the authorized principal; the handler adds server
 time and passes a root `ReconcileRequest` to the controller. Operation path
 resources must satisfy the lowercase 255-byte identifier grammar before
 authorization is invoked.
+
+`sequencehttp.Controller.Inspect` returns a pre-encoded UTF-8 JSON `Inspection`.
+The handler rejects empty, oversized, non-UTF-8, or invalid JSON results before
+writing a response; controllers retain the bytes and must not mutate
+them until request handling returns.

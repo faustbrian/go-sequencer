@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 )
 
 func FuzzPersistedAttemptStateErrorAndOutput(fuzz *testing.F) {

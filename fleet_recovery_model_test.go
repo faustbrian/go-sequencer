@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 type recoveryModelAction uint8
@@ -85,7 +85,7 @@ func assertRecoveryTrace(t *testing.T, trace []recoveryModelAction) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	store := memory.New()
-	registration := sequencer.Registration{ID: "model.operation", Version: 1, Checksum: "sha256:model", Channel: "deploy"}
+	registration := sequencer.Registration{ID: "model.operation", Version: 1, Checksum: checksumFor("model"), Channel: "deploy"}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/scheduler"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/scheduler"
 )
 
 func TestAdapterSchedulesExplicitEligibility(t *testing.T) {

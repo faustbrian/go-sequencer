@@ -1,6 +1,6 @@
 schema_version: 1
-tool_version: v1.6.2
-tool_checksums_sha256: 2a740a44fee468f042b4a66e086fc01a02d8d28877c9b1866e278102665b35ad
+tool_version: v1.7.2
+tool_checksums_sha256: 0f83e24640538fb07d02e5ce6c7e61368d5f17d93ac2c6b9c96f9e75c63a4818
 
 manifest:
   modules: modules.json
@@ -20,7 +20,7 @@ api:
   baselines:
     - module: .
       mode: apidiff
-      path: api/baseline.txt
+      path: api/v2.txt
 
 operations:
   - module: .

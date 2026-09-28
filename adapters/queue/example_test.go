@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	sequencerqueue "github.com/faustbrian/go-sequencer/adapters/queue"
+	sequencerqueue "github.com/faustbrian/go-sequencer/v2/adapters/queue"
 )
 
 func ExampleNewDispatcher() {

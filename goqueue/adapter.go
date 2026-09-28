@@ -1,6 +1,6 @@
 // Package goqueue provides the retained Sequencer queue adapter.
 //
-// Deprecated: use github.com/faustbrian/go-sequencer/adapters/queue. This
+// Deprecated: use github.com/faustbrian/go-sequencer/v2/adapters/queue. This
 // package remains supported for the longer of 180 days after successor public
 // availability and two subsequently published stable minor releases.
 package goqueue
@@ -8,8 +8,8 @@ package goqueue
 import (
 	"context"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	adapter "github.com/faustbrian/go-sequencer/adapters/queue"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	adapter "github.com/faustbrian/go-sequencer/v2/adapters/queue"
 )
 
 var (

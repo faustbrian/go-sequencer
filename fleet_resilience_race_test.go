@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 func TestLeaseRenewalCompletionRecoveryAndTakeoverRaceKeepsOneOwner(t *testing.T) {
@@ -19,7 +19,7 @@ func TestLeaseRenewalCompletionRecoveryAndTakeoverRaceKeepsOneOwner(t *testing.T
 		store := memory.New()
 		id := sequencer.OperationID(fmt.Sprintf("race.lifecycle-%d", iteration))
 		base := time.Unix(1_000+int64(iteration), 0)
-		registration := sequencer.Registration{ID: id, Version: 1, Checksum: "sha256:race", UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent}
+		registration := sequencer.Registration{ID: id, Version: 1, Checksum: checksumFor("race"), UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent}
 		if err := store.Register(context.Background(), []sequencer.Registration{registration}, base); err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func TestResetCompletionRaceNeverLeavesOldOwnershipWritable(t *testing.T) {
 		store := memory.New()
 		id := sequencer.OperationID(fmt.Sprintf("race.reset-%d", iteration))
 		base := time.Unix(2_000+int64(iteration), 0)
-		registration := sequencer.Registration{ID: id, Version: 1, Checksum: "sha256:reset"}
+		registration := sequencer.Registration{ID: id, Version: 1, Checksum: checksumFor("reset")}
 		if err := store.Register(context.Background(), []sequencer.Registration{registration}, base); err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +133,7 @@ func TestMixedRegistryRegistrationAndClaimRaceKeepsExactGeneration(t *testing.T)
 		store := memory.New()
 		id := sequencer.OperationID(fmt.Sprintf("race.registry-%d", iteration))
 		base := time.Unix(3_000+int64(iteration), 0)
-		v1 := sequencer.Registration{ID: id, Version: 1, Checksum: "sha256:v1"}
+		v1 := sequencer.Registration{ID: id, Version: 1, Checksum: checksumFor("v1")}
 		if err := store.Register(context.Background(), []sequencer.Registration{v1}, base); err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +143,7 @@ func TestMixedRegistryRegistrationAndClaimRaceKeepsExactGeneration(t *testing.T)
 		claimErrors := make(chan error, 1)
 		go func() {
 			<-start
-			registered <- store.Register(context.Background(), []sequencer.Registration{{ID: id, Version: 2, Checksum: "sha256:v2"}}, base)
+			registered <- store.Register(context.Background(), []sequencer.Registration{{ID: id, Version: 2, Checksum: checksumFor("v2")}}, base)
 		}()
 		go func() {
 			<-start
@@ -167,8 +167,8 @@ func TestStaleCompensationOwnerCannotCompleteAfterTakeover(t *testing.T) {
 
 	store := memory.New()
 	base := time.Unix(4_000, 0)
-	forward := sequencer.DependencyRef{ID: "forward", Version: 1, Checksum: "sha256:forward"}
-	compensation := sequencer.Registration{ID: "compensate", Version: 1, Checksum: "sha256:compensate", DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward, UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent}
+	forward := sequencer.DependencyRef{ID: "forward", Version: 1, Checksum: checksumFor("forward")}
+	compensation := sequencer.Registration{ID: "compensate", Version: 1, Checksum: checksumFor("compensate"), DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward, UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent}
 	if err := store.Register(context.Background(), []sequencer.Registration{{ID: forward.ID, Version: forward.Version, Checksum: forward.Checksum}, compensation}, base); err != nil {
 		t.Fatal(err)
 	}
@@ -210,9 +210,9 @@ func TestStaleCompensationCannotCompleteAfterForwardGenerationAdvances(t *testin
 	store := memory.New()
 	ctx := context.Background()
 	base := time.Unix(5_000, 0)
-	forward := sequencer.DependencyRef{ID: "forward-generation", Version: 1, Checksum: "sha256:forward-generation"}
+	forward := sequencer.DependencyRef{ID: "forward-generation", Version: 1, Checksum: checksumFor("forward-generation")}
 	compensation := sequencer.Registration{
-		ID: "compensate-generation", Version: 1, Checksum: "sha256:compensate-generation",
+		ID: "compensate-generation", Version: 1, Checksum: checksumFor("compensate-generation"),
 		DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 	}
 	if err := store.Register(ctx, []sequencer.Registration{
@@ -324,9 +324,9 @@ func TestForwardResetWaitsForRecoveredCompensation(t *testing.T) {
 	store := memory.New()
 	ctx := context.Background()
 	base := time.Unix(6_000, 0)
-	forward := sequencer.DependencyRef{ID: "recovered-forward", Version: 1, Checksum: "sha256:recovered-forward"}
+	forward := sequencer.DependencyRef{ID: "recovered-forward", Version: 1, Checksum: checksumFor("recovered-forward")}
 	compensation := sequencer.Registration{
-		ID: "recovered-compensation", Version: 1, Checksum: "sha256:recovered-compensation",
+		ID: "recovered-compensation", Version: 1, Checksum: checksumFor("recovered-compensation"),
 		DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 		UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
 	}
@@ -439,11 +439,11 @@ func TestForwardResetFencesEveryActiveCompensationState(t *testing.T) {
 			base := time.Unix(7_000+int64(index*100), 0)
 			forward := sequencer.DependencyRef{
 				ID: sequencer.OperationID(fmt.Sprintf("state-forward-%d", index)), Version: 1,
-				Checksum: fmt.Sprintf("sha256:state-forward-%d", index),
+				Checksum: checksumFor(fmt.Sprintf("state-forward-%d", index)),
 			}
 			compensation := sequencer.Registration{
 				ID: sequencer.OperationID(fmt.Sprintf("state-compensation-%d", index)), Version: 1,
-				Checksum:       fmt.Sprintf("sha256:state-compensation-%d", index),
+				Checksum:       checksumFor(fmt.Sprintf("state-compensation-%d", index)),
 				DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 			}
 			if test.replayIdempotent {
@@ -499,10 +499,10 @@ func TestForwardResetCountsEveryActiveCompensation(t *testing.T) {
 	store := memory.New()
 	ctx := context.Background()
 	base := time.Unix(8_000, 0)
-	forward := sequencer.DependencyRef{ID: "counted-forward", Version: 1, Checksum: "sha256:counted-forward"}
+	forward := sequencer.DependencyRef{ID: "counted-forward", Version: 1, Checksum: checksumFor("counted-forward")}
 	compensations := []sequencer.Registration{
-		{ID: "counted-compensation-a", Version: 1, Checksum: "sha256:counted-compensation-a", DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward},
-		{ID: "counted-compensation-b", Version: 1, Checksum: "sha256:counted-compensation-b", DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward},
+		{ID: "counted-compensation-a", Version: 1, Checksum: checksumFor("counted-compensation-a"), DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward},
+		{ID: "counted-compensation-b", Version: 1, Checksum: checksumFor("counted-compensation-b"), DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward},
 	}
 	registrations := append([]sequencer.Registration{{ID: forward.ID, Version: 1, Checksum: forward.Checksum}}, compensations...)
 	if err := store.Register(ctx, registrations, base); err != nil {

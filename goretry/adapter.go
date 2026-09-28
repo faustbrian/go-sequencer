@@ -1,6 +1,6 @@
 // Package goretry provides the retained Sequencer retry adapter.
 //
-// Deprecated: use github.com/faustbrian/go-sequencer/adapters/retry. This
+// Deprecated: use github.com/faustbrian/go-sequencer/v2/adapters/retry. This
 // package remains supported for the longer of 180 days after successor public
 // availability and two subsequently published stable minor releases.
 package goretry
@@ -8,8 +8,8 @@ package goretry
 import (
 	"context"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	adapter "github.com/faustbrian/go-sequencer/adapters/retry"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	adapter "github.com/faustbrian/go-sequencer/v2/adapters/retry"
 )
 
 // ErrInvalidAdapter reports a missing bounded retry policy.

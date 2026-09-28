@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
+
+func testChecksum(value string) string { return sequencer.ChecksumBytes([]byte(value)) }
 
 func TestStoreClaimsExactlyOnceAndEnforcesOwnership(t *testing.T) {
 	t.Parallel()
@@ -113,12 +115,12 @@ func TestStoreFailsClosedOnChecksumDriftAndRecoversExpiredClaim(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	store := memory.New()
-	registration := sequencer.Registration{ID: "a", Version: 1, Checksum: "sha256:a", UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent}
+	registration := sequencer.Registration{ID: "a", Version: 1, Checksum: testChecksum("sha256:a"), UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}
 	drifted := registration
-	drifted.Checksum = "sha256:changed"
+	drifted.Checksum = testChecksum("changed")
 	if err := store.Register(ctx, []sequencer.Registration{drifted}, now); !errors.Is(err, sequencer.ErrChecksumDrift) {
 		t.Fatalf("Register drift error = %v", err)
 	}
@@ -136,6 +138,50 @@ func TestStoreFailsClosedOnChecksumDriftAndRecoversExpiredClaim(t *testing.T) {
 	next, err := store.ClaimNext(ctx, sequencer.ClaimRequest{OperationIDs: []sequencer.OperationID{"a"}, Owner: "two", Now: now.Add(3 * time.Second), LeaseDuration: time.Second})
 	if err != nil || next.Attempt.Number != claim.Attempt.Number+1 || next.Attempt.Fencing <= claim.Attempt.Fencing {
 		t.Fatalf("recovered claim = %+v, %v", next, err)
+	}
+}
+
+func TestLiveTransitionTimestampSurvivesInterveningRenewal(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	for _, transition := range []string{"mark", "complete"} {
+		t.Run(transition, func(t *testing.T) {
+			store := memory.New()
+			register(t, store, "timestamp", "sha256:timestamp", base)
+			claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{OperationIDs: []sequencer.OperationID{"timestamp"}, Owner: "owner", Now: base, LeaseDuration: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if transition == "complete" {
+				if _, err = store.MarkRunning(ctx, claim.Ownership(), base.Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sampled := base.Add(2 * time.Second)
+			renewed := base.Add(3 * time.Second)
+			if _, err = store.RenewLease(ctx, claim.Ownership(), renewed, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if transition == "mark" {
+				_, err = store.MarkRunning(ctx, claim.Ownership(), sampled)
+			} else {
+				err = store.Complete(ctx, sequencer.Completion{Ownership: claim.Ownership(), State: sequencer.Succeeded, At: sampled})
+			}
+			if err != nil {
+				t.Fatalf("sampled transition rejected after renewal: %v", err)
+			}
+			record, _ := store.Snapshot(ctx, "timestamp", 1)
+			audit, _ := store.Audit(ctx, "timestamp", 1, 10)
+			if !record.UpdatedAt.Equal(renewed) || !audit[len(audit)-1].At.Equal(renewed) {
+				t.Fatal("transition timestamp regressed")
+			}
+			if transition == "complete" {
+				history, _ := store.History(ctx, "timestamp", 1, 10)
+				if !history[0].CompletedAt.Equal(renewed) {
+					t.Fatal("completion history timestamp regressed")
+				}
+			}
+		})
 	}
 }
 
@@ -276,13 +322,13 @@ func TestStoreClaimsOnlyTheLocalBinaryOperationVersion(t *testing.T) {
 	now := time.Date(2026, 8, 9, 11, 0, 0, 0, time.UTC)
 	store := memory.New()
 	if err := store.Register(ctx, []sequencer.Registration{
-		{ID: "rolling", Version: 1, Checksum: "sha256:v1"},
-		{ID: "rolling", Version: 2, Checksum: "sha256:v2"},
+		{ID: "rolling", Version: 1, Checksum: testChecksum("sha256:v1")},
+		{ID: "rolling", Version: 2, Checksum: testChecksum("sha256:v2")},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
 	claim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
-		Candidates: []sequencer.ClaimCandidate{{ID: "rolling", Version: 1, Checksum: "sha256:v1"}},
+		Candidates: []sequencer.ClaimCandidate{{ID: "rolling", Version: 1, Checksum: testChecksum("sha256:v1")}},
 		Owner:      "old-binary", Now: now, LeaseDuration: time.Minute,
 	})
 	if err != nil {
@@ -292,7 +338,7 @@ func TestStoreClaimsOnlyTheLocalBinaryOperationVersion(t *testing.T) {
 		t.Fatalf("claimed version = %d, want local version 1", claim.Attempt.Version)
 	}
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
-		Candidates: []sequencer.ClaimCandidate{{ID: "rolling", Version: 2, Checksum: "sha256:changed"}},
+		Candidates: []sequencer.ClaimCandidate{{ID: "rolling", Version: 2, Checksum: testChecksum("sha256:changed")}},
 		Owner:      "drifted-binary", Now: now, LeaseDuration: time.Minute,
 	}); !errors.Is(err, sequencer.ErrChecksumDrift) {
 		t.Fatalf("checksum-mismatched claim error = %v", err)
@@ -304,10 +350,10 @@ func TestStoreValidatesRegistrationAndContinuesAfterExistingIdentity(t *testing.
 
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	invalid := []sequencer.Registration{
-		{Version: 1, Checksum: "sha256:value"},
-		{ID: "Invalid", Version: 1, Checksum: "sha256:value"},
-		{ID: "value", Version: 1, Checksum: "sha256:value", Channel: "Invalid Channel"},
-		{ID: "value", Checksum: "sha256:value"},
+		{Version: 1, Checksum: testChecksum("sha256:value")},
+		{ID: "Invalid", Version: 1, Checksum: testChecksum("sha256:value")},
+		{ID: "value", Version: 1, Checksum: testChecksum("sha256:value"), Channel: "Invalid Channel"},
+		{ID: "value", Checksum: testChecksum("sha256:value")},
 		{ID: "value", Version: 1},
 	}
 	for _, registration := range invalid {
@@ -320,8 +366,8 @@ func TestStoreValidatesRegistrationAndContinuesAfterExistingIdentity(t *testing.
 	store := memory.New()
 	register(t, store, "existing", "sha256:existing", now)
 	if err := store.Register(context.Background(), []sequencer.Registration{
-		{ID: "existing", Version: 1, Checksum: "sha256:existing"},
-		{ID: "new", Version: 1, Checksum: "sha256:new"},
+		{ID: "existing", Version: 1, Checksum: testChecksum("sha256:existing")},
+		{ID: "new", Version: 1, Checksum: testChecksum("sha256:new")},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -335,16 +381,16 @@ func TestStoreRejectsEveryInvalidRegistrationBoundaryAtomically(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Date(2026, 8, 10, 12, 30, 0, 0, time.UTC)
-	dependency := sequencer.DependencyRef{ID: "dependency", Version: 1, Checksum: "sha256:dependency"}
+	dependency := sequencer.DependencyRef{ID: "dependency", Version: 1, Checksum: testChecksum("sha256:dependency")}
 	invalid := []sequencer.Registration{
-		{ID: "legacy", Version: 1, Checksum: "sum", Dependencies: []sequencer.OperationID{"dependency"}},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{Version: 1, Checksum: "sum"}}},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "Invalid", Version: 1, Checksum: "sum"}}},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "operation", Version: 1, Checksum: "sum"}}},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Checksum: "sum"}}},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1}}},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{dependency, dependency}},
-		{ID: "operation", Version: 1, Checksum: "sum", Compensates: &dependency},
+		{ID: "legacy", Version: 1, Checksum: testChecksum("sum"), Dependencies: []sequencer.OperationID{"dependency"}},
+		{ID: "operation", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{Version: 1, Checksum: testChecksum("sum")}}},
+		{ID: "operation", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "Invalid", Version: 1, Checksum: testChecksum("sum")}}},
+		{ID: "operation", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "operation", Version: 1, Checksum: testChecksum("sum")}}},
+		{ID: "operation", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Checksum: testChecksum("sum")}}},
+		{ID: "operation", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1}}},
+		{ID: "operation", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{dependency, dependency}},
+		{ID: "operation", Version: 1, Checksum: testChecksum("sum"), Compensates: &dependency},
 	}
 	for _, registration := range invalid {
 		if err := memory.New().Register(ctx, []sequencer.Registration{registration}, now); err == nil {
@@ -354,42 +400,47 @@ func TestStoreRejectsEveryInvalidRegistrationBoundaryAtomically(t *testing.T) {
 	if err := memory.New().Register(ctx, nil, time.Time{}); !errors.Is(err, sequencer.ErrInvalidOperation) {
 		t.Fatalf("Register(zero time) error = %v", err)
 	}
+	if err := memory.New().Register(
+		ctx,
+		make([]sequencer.Registration, sequencer.DefaultMaxOperations+1),
+		now,
+	); !errors.Is(err, sequencer.ErrResourceLimit) {
+		t.Fatalf("Register(batch overflow) error = %v", err)
+	}
 	tooMany := make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies+1)
 	for index := range tooMany {
 		tooMany[index] = sequencer.DependencyRef{
-			ID: sequencer.OperationID(fmt.Sprintf("dependency-%d", index)), Version: 1, Checksum: "sum",
+			ID: sequencer.OperationID(fmt.Sprintf("dependency-%d", index)), Version: 1, Checksum: testChecksum("sum"),
 		}
 	}
 	if err := memory.New().Register(ctx, []sequencer.Registration{{
-		ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: tooMany,
+		ID: "operation", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: tooMany,
 	}}, now); !errors.Is(err, sequencer.ErrResourceLimit) {
 		t.Fatalf("Register(dependency overflow) error = %v", err)
 	}
 	for _, registration := range []sequencer.Registration{
 		{ID: "operation", Version: 1, Checksum: strings.Repeat("c", 513)},
-		{ID: "operation", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: strings.Repeat("c", 513)}}},
+		{ID: "operation", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: strings.Repeat("c", 513)}}},
 	} {
-		if err := memory.New().Register(ctx, []sequencer.Registration{registration}, now); !errors.Is(err, sequencer.ErrResourceLimit) {
+		if err := memory.New().Register(ctx, []sequencer.Registration{registration}, now); !errors.Is(err, sequencer.ErrInvalidOperation) {
 			t.Fatalf("Register(checksum overflow) error = %v", err)
 		}
 	}
-	exactDependencyChecksum := strings.Repeat("c", sequencer.DefaultMaxChecksumBytes)
 	exactDependencyRefs := make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies)
 	for index := range exactDependencyRefs {
 		exactDependencyRefs[index] = sequencer.DependencyRef{
-			ID: sequencer.OperationID(fmt.Sprintf("exact-dependency-%d", index)), Version: 1, Checksum: "sum",
+			ID: sequencer.OperationID(fmt.Sprintf("exact-dependency-%d", index)), Version: 1, Checksum: testChecksum("sum"),
 		}
 	}
-	exactDependencyRefs[0].Checksum = exactDependencyChecksum
 	if err := memory.New().Register(ctx, []sequencer.Registration{{
-		ID: "operation", Version: 1, Checksum: "sum",
+		ID: "operation", Version: 1, Checksum: testChecksum("sum"),
 		DependencyRefs: exactDependencyRefs,
 	}}, now); err != nil {
 		t.Fatalf("Register(exact dependency bounds) error = %v", err)
 	}
 
 	compensating := sequencer.Registration{
-		ID: "compensating", Version: 1, Checksum: "sum",
+		ID: "compensating", Version: 1, Checksum: testChecksum("sum"),
 		DependencyRefs: []sequencer.DependencyRef{dependency}, Compensates: &dependency,
 	}
 	store := memory.New()
@@ -403,7 +454,7 @@ func TestStoreRejectsEveryInvalidRegistrationBoundaryAtomically(t *testing.T) {
 	if err := duplicateBatch.Register(ctx, []sequencer.Registration{
 		compensating,
 		compensating,
-		{ID: "after-duplicate", Version: 1, Checksum: "sum"},
+		{ID: "after-duplicate", Version: 1, Checksum: testChecksum("sum")},
 	}, now); err != nil {
 		t.Fatalf("Register(duplicate followed by distinct identity) error = %v", err)
 	}
@@ -426,8 +477,8 @@ func TestStoreRegistrationComparesCompensationPresenceAndIdentity(t *testing.T) 
 
 	ctx := context.Background()
 	now := time.Date(2026, 8, 10, 12, 45, 0, 0, time.UTC)
-	first := sequencer.DependencyRef{ID: "first", Version: 1, Checksum: "sha256:first"}
-	second := sequencer.DependencyRef{ID: "second", Version: 1, Checksum: "sha256:second"}
+	first := sequencer.DependencyRef{ID: "first", Version: 1, Checksum: testChecksum("sha256:first")}
+	second := sequencer.DependencyRef{ID: "second", Version: 1, Checksum: testChecksum("sha256:second")}
 	dependencies := []sequencer.DependencyRef{first, second}
 	tests := []struct {
 		name    string
@@ -445,7 +496,7 @@ func TestStoreRegistrationComparesCompensationPresenceAndIdentity(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			store := memory.New()
 			registration := sequencer.Registration{
-				ID: "operation", Version: 1, Checksum: "sum",
+				ID: "operation", Version: 1, Checksum: testChecksum("sum"),
 				DependencyRefs: dependencies, Compensates: test.stored,
 			}
 			if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
@@ -540,16 +591,16 @@ func TestStoreRegistrationIsAtomicAndRejectsDependencyDrift(t *testing.T) {
 	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
 	store := memory.New()
 	if err := store.Register(ctx, []sequencer.Registration{
-		{ID: "dependency-a", Version: 1, Checksum: "sha256:a"},
-		{ID: "dependency-b", Version: 1, Checksum: "sha256:b"},
-		{ID: "existing", Version: 1, Checksum: "sha256:existing", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-a", Version: 1, Checksum: "sha256:a"}}},
+		{ID: "dependency-a", Version: 1, Checksum: testChecksum("sha256:a")},
+		{ID: "dependency-b", Version: 1, Checksum: testChecksum("sha256:b")},
+		{ID: "existing", Version: 1, Checksum: testChecksum("sha256:existing"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-a", Version: 1, Checksum: testChecksum("sha256:a")}}},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
 
 	err := store.Register(ctx, []sequencer.Registration{
-		{ID: "must-not-persist", Version: 1, Checksum: "sha256:new"},
-		{ID: "existing", Version: 1, Checksum: "sha256:existing", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-b", Version: 1, Checksum: "sha256:b"}}},
+		{ID: "must-not-persist", Version: 1, Checksum: testChecksum("sha256:new")},
+		{ID: "existing", Version: 1, Checksum: testChecksum("sha256:existing"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-b", Version: 1, Checksum: testChecksum("sha256:b")}}},
 	}, now.Add(time.Minute))
 	if !errors.Is(err, sequencer.ErrDefinitionDrift) {
 		t.Fatalf("Register(dependency drift) error = %v", err)
@@ -559,16 +610,16 @@ func TestStoreRegistrationIsAtomicAndRejectsDependencyDrift(t *testing.T) {
 	}
 
 	if err := store.Register(ctx, []sequencer.Registration{
-		{ID: "existing", Version: 1, Checksum: "sha256:existing", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-a", Version: 1, Checksum: "sha256:a"}}},
+		{ID: "existing", Version: 1, Checksum: testChecksum("sha256:existing"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency-a", Version: 1, Checksum: testChecksum("sha256:a")}}},
 	}, now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("Register(same dependencies) error = %v", err)
 	}
 	for _, reference := range []sequencer.DependencyRef{
-		{ID: "dependency-a", Version: 2, Checksum: "sha256:a"},
-		{ID: "dependency-a", Version: 1, Checksum: "sha256:changed"},
+		{ID: "dependency-a", Version: 2, Checksum: testChecksum("sha256:a")},
+		{ID: "dependency-a", Version: 1, Checksum: testChecksum("sha256:changed")},
 	} {
 		err := store.Register(ctx, []sequencer.Registration{{
-			ID: "existing", Version: 1, Checksum: "sha256:existing",
+			ID: "existing", Version: 1, Checksum: testChecksum("sha256:existing"),
 			DependencyRefs: []sequencer.DependencyRef{reference},
 		}}, now.Add(3*time.Minute))
 		if !errors.Is(err, sequencer.ErrDefinitionDrift) {
@@ -582,7 +633,7 @@ func TestStoreRejectsRegistrationAndClaimChannelDrift(t *testing.T) {
 
 	store := memory.New()
 	now := time.Now()
-	registration := sequencer.Registration{ID: "operation", Version: 1, Checksum: "sum", Channel: "deploy"}
+	registration := sequencer.Registration{ID: "operation", Version: 1, Checksum: testChecksum("sum"), Channel: "deploy"}
 	if err := store.Register(context.Background(), []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -607,10 +658,10 @@ func TestStoreCanonicalizesExactDependencyOrder(t *testing.T) {
 	now := time.Date(2026, 8, 10, 9, 30, 0, 0, time.UTC)
 	store := memory.New()
 	references := []sequencer.DependencyRef{
-		{ID: "b", Version: 2, Checksum: "sha256:b"},
-		{ID: "a", Version: 1, Checksum: "sha256:a"},
+		{ID: "b", Version: 2, Checksum: testChecksum("sha256:b")},
+		{ID: "a", Version: 1, Checksum: testChecksum("sha256:a")},
 	}
-	registration := sequencer.Registration{ID: "dependent", Version: 1, Checksum: "sha256:dependent", DependencyRefs: references}
+	registration := sequencer.Registration{ID: "dependent", Version: 1, Checksum: testChecksum("sha256:dependent"), DependencyRefs: references}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -632,12 +683,12 @@ func TestStorePinsDependencyEligibilityToExactIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
 	store := memory.New()
 	registration := sequencer.Registration{
-		ID: "dependent", Version: 1, Checksum: "sha256:dependent",
-		DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"}},
+		ID: "dependent", Version: 1, Checksum: testChecksum("sha256:dependent"),
+		DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: testChecksum("sha256:dependency-v1")}},
 	}
 	if err := store.Register(ctx, []sequencer.Registration{
-		{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"},
-		{ID: "dependency", Version: 2, Checksum: "sha256:dependency-v2"},
+		{ID: "dependency", Version: 1, Checksum: testChecksum("sha256:dependency-v1")},
+		{ID: "dependency", Version: 2, Checksum: testChecksum("sha256:dependency-v2")},
 		registration,
 	}, now); err != nil {
 		t.Fatal(err)
@@ -659,14 +710,14 @@ func TestStorePinsDependencyEligibilityToExactIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	complete(2, "sha256:dependency-v2")
+	complete(2, testChecksum("sha256:dependency-v2"))
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
 		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum}},
 		Owner:      "owner", Now: now, LeaseDuration: time.Second,
 	}); !errors.Is(err, sequencer.ErrNoEligibleOperation) {
 		t.Fatalf("dependent claimed after only newer dependency succeeded: %v", err)
 	}
-	complete(1, "sha256:dependency-v1")
+	complete(1, testChecksum("sha256:dependency-v1"))
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
 		Candidates: []sequencer.ClaimCandidate{{ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum}},
 		Owner:      "owner", Now: now, LeaseDuration: time.Second,
@@ -680,7 +731,7 @@ func TestStorePinsDependencyEligibilityToExactIdentity(t *testing.T) {
 	}
 	record.DependencyRefs[0].Checksum = "mutated"
 	again, err := store.Snapshot(ctx, registration.ID, registration.Version)
-	if err != nil || again.DependencyRefs[0].Checksum != "sha256:dependency-v1" {
+	if err != nil || again.DependencyRefs[0].Checksum != testChecksum("sha256:dependency-v1") {
 		t.Fatalf("Snapshot dependency refs are mutable: %+v, %v", again.DependencyRefs, err)
 	}
 }
@@ -706,7 +757,7 @@ func TestStoreValidatesClaimFieldsIndependentlyAndSkipsIneligibleCandidates(t *t
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
 		Candidates: []sequencer.ClaimCandidate{{ID: "ready", Version: 1, Checksum: strings.Repeat("c", 513)}},
 		Owner:      "owner", Now: now, LeaseDuration: time.Second,
-	}); !errors.Is(err, sequencer.ErrResourceLimit) {
+	}); !errors.Is(err, sequencer.ErrInvalidOperation) {
 		t.Fatalf("ClaimNext(checksum overflow) error = %v", err)
 	}
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
@@ -732,7 +783,7 @@ func TestStoreValidatesClaimFieldsIndependentlyAndSkipsIneligibleCandidates(t *t
 	}
 	store = memory.New()
 	exactOwner := strings.Repeat("o", sequencer.DefaultMaxActorBytes)
-	exactChecksum := strings.Repeat("c", sequencer.DefaultMaxChecksumBytes)
+	exactChecksum := testChecksum("exact-checksum")
 	register(t, store, "ready", exactChecksum, now)
 	exactCandidates := make([]sequencer.ClaimCandidate, sequencer.DefaultMaxOperations)
 	for index := range exactCandidates {
@@ -752,7 +803,7 @@ func TestStoreValidatesClaimFieldsIndependentlyAndSkipsIneligibleCandidates(t *t
 	register(t, store, "ready", "sha256:ready", now)
 
 	if err := store.Register(ctx, []sequencer.Registration{
-		{ID: "blocked", Version: 1, Checksum: "sha256:blocked", DependencyRefs: []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: "sha256:missing"}}},
+		{ID: "blocked", Version: 1, Checksum: testChecksum("sha256:blocked"), DependencyRefs: []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: testChecksum("sha256:missing")}}},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -950,7 +1001,7 @@ func TestStoreBlocksUnknownExpiredWorkUntilExplicitResolution(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	store := memory.New()
-	registration := sequencer.Registration{ID: "unknown", Version: 1, Checksum: "sum"}
+	registration := sequencer.Registration{ID: "unknown", Version: 1, Checksum: testChecksum("sum")}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -1001,7 +1052,7 @@ func TestStoreReplaysExpiredWorkOnlyForExplicitIdempotencyPolicy(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 10, 13, 0, 0, 0, time.UTC)
 	store := memory.New()
-	registration := sequencer.Registration{ID: "idempotent", Version: 1, Checksum: "sum", UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent}
+	registration := sequencer.Registration{ID: "idempotent", Version: 1, Checksum: testChecksum("sum"), UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -1027,7 +1078,7 @@ func TestStoreResolvesUnknownAndResumesCanceledWithAttributedBounds(t *testing.T
 	now := time.Date(2026, 8, 10, 14, 0, 0, 0, time.UTC)
 	for _, resolution := range []sequencer.ReconcileResolution{sequencer.ReconcileSucceeded, sequencer.ReconcileFailed} {
 		store := memory.New()
-		registration := sequencer.Registration{ID: sequencer.OperationID(resolution.String()), Version: 1, Checksum: "sum", DeadLetter: resolution == sequencer.ReconcileFailed}
+		registration := sequencer.Registration{ID: sequencer.OperationID(resolution.String()), Version: 1, Checksum: testChecksum("sum"), DeadLetter: resolution == sequencer.ReconcileFailed}
 		if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 			t.Fatal(err)
 		}
@@ -1135,9 +1186,9 @@ func TestStoreHistoryAuditResetAndDependenciesEnforceExactBounds(t *testing.T) {
 	}
 
 	if err := store.Register(ctx, []sequencer.Registration{
-		{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"},
-		{ID: "dependency", Version: 2, Checksum: "sha256:dependency-v2"},
-		{ID: "dependent", Version: 1, Checksum: "sha256:dependent", DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: "sha256:dependency-v1"}}},
+		{ID: "dependency", Version: 1, Checksum: testChecksum("sha256:dependency-v1")},
+		{ID: "dependency", Version: 2, Checksum: testChecksum("sha256:dependency-v2")},
+		{ID: "dependent", Version: 1, Checksum: testChecksum("sha256:dependent"), DependencyRefs: []sequencer.DependencyRef{{ID: "dependency", Version: 1, Checksum: testChecksum("sha256:dependency-v1")}}},
 	}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -1235,9 +1286,9 @@ func TestStoreCompensationReplayRequiresCurrentForwardGeneration(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 8, 11, 20, 0, 0, 0, time.UTC)
 	store := memory.New()
-	forward := sequencer.DependencyRef{ID: "generation-forward", Version: 1, Checksum: "sha256:generation-forward"}
+	forward := sequencer.DependencyRef{ID: "generation-forward", Version: 1, Checksum: testChecksum("sha256:generation-forward")}
 	compensation := sequencer.Registration{
-		ID: "generation-compensation", Version: 1, Checksum: "sha256:generation-compensation",
+		ID: "generation-compensation", Version: 1, Checksum: testChecksum("sha256:generation-compensation"),
 		DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 	}
 	if err := store.Register(ctx, []sequencer.Registration{
@@ -1298,9 +1349,9 @@ func TestStoreCompensationReplayAcceptsSkippedForwardGeneration(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 8, 11, 21, 0, 0, 0, time.UTC)
 	store := memory.New()
-	forward := sequencer.DependencyRef{ID: "skipped-generation-forward", Version: 1, Checksum: "sha256:skipped-generation-forward"}
+	forward := sequencer.DependencyRef{ID: "skipped-generation-forward", Version: 1, Checksum: testChecksum("sha256:skipped-generation-forward")}
 	compensation := sequencer.Registration{
-		ID: "skipped-generation-compensation", Version: 1, Checksum: "sha256:skipped-generation-compensation",
+		ID: "skipped-generation-compensation", Version: 1, Checksum: testChecksum("sha256:skipped-generation-compensation"),
 		DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 	}
 	if err := store.Register(ctx, []sequencer.Registration{
@@ -1348,6 +1399,9 @@ func TestStoreCompensationReplayAcceptsSkippedForwardGeneration(t *testing.T) {
 
 func register(t *testing.T, store *memory.Store, id sequencer.OperationID, checksum string, now time.Time) {
 	t.Helper()
+	if !sequencer.ValidChecksum(checksum) {
+		checksum = testChecksum(checksum)
+	}
 	if err := store.Register(context.Background(), []sequencer.Registration{{ID: id, Version: 1, Checksum: checksum}}, now); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}

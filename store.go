@@ -3,11 +3,19 @@ package sequencer
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 )
+
+var (
+	bearerCredentialPattern = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
+	namedCredentialPattern  = regexp.MustCompile(`(?i)\b(authorization|password|passwd|secret|token|api[_-]?key|credential)s?\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)`)
+)
+
+const persistenceSanitizerLookaheadBytes = 4 << 10
 
 var (
 	// ErrPermanent marks a non-retryable operation failure.
@@ -286,11 +294,20 @@ type ReconciliationStore interface {
 	ResolveUnknown(context.Context, ReconcileRequest) error
 }
 
-// SanitizePersistenceText removes control characters and applies a byte bound.
-// Applications should pass pre-redacted summaries; arbitrary errors, payloads,
-// stack traces, and secrets must not be persisted.
+// SanitizePersistenceText redacts common credential forms, removes control
+// characters, and applies a byte bound. Work is bounded to maximum plus a
+// fixed credential-pattern lookahead. Applications must still avoid passing
+// arbitrary payloads, stack traces, and unknown secret formats.
 func SanitizePersistenceText(value string, maximum int) string {
 	maximum = max(maximum, 0)
+	if maximum == 0 {
+		return ""
+	}
+	if maximum < len(value) {
+		value = value[:maximum+min(len(value)-maximum, persistenceSanitizerLookaheadBytes)]
+	}
+	value = bearerCredentialPattern.ReplaceAllString(value, "Bearer [REDACTED]")
+	value = namedCredentialPattern.ReplaceAllString(value, "$1=[REDACTED]")
 	value = strings.Map(func(character rune) rune {
 		if unicode.IsControl(character) {
 			return ' '

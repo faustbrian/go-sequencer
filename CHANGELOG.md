@@ -4,7 +4,30 @@
 
 ### Changed
 
+- Publish these intentional stable-contract changes from the stable
+  `github.com/faustbrian/go-sequencer/v2` module path. Version 1 remains on its
+  released API and behavior.
 - Raise the minimum supported and tested Go toolchain to 1.27.0.
+- Require canonical lowercase `sha256:` definition checksums at plan, store,
+  and queue boundaries. Convert legacy opaque checksums with `ChecksumBytes` on
+  a new operation version, not an existing ledger identity; drain or reconcile
+  old queued commands with compatible workers and retain old definitions for
+  rollback until their claim window closes.
+- Fail a fleet closed when an in-process handler remains active beyond its
+  operation deadline, preserving the unknown outcome without admitting
+  replacement work into the retained execution slot.
+- Keep memory-store transitions monotonic across concurrent lease renewals
+  without rejecting valid running or completion updates.
+- Apply the same attempt deadline and retained-slot protection to approval,
+  condition, transaction, and handler callbacks; contain approval panics and
+  prevent late approvals from starting handlers.
+- Isolate observer panics and blocking callbacks behind one bounded delivery
+  worker per observer, with best-effort overflow behavior.
+- Redact common credential forms and sensitive metadata keys at direct store
+  boundaries, bound direct registration batches, and require pre-encoded
+  bounded administrative inspection responses before committing HTTP headers.
+- Adopt checksum-pinned go-library-tools v1.7.2 with the default secret-scanning
+  rules and no repository-local allowlists.
 
 ## 1.1.0 - 2026-09-09
 

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 )
 
 // ErrInvalidAdapter reports an unavailable scheduler or invalid request.

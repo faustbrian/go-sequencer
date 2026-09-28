@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
 )
 
 // Clock is a concurrency-safe manually advanced clock.

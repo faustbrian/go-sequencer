@@ -1,6 +1,6 @@
 // Package golease provides the retained Sequencer lease adapter.
 //
-// Deprecated: use github.com/faustbrian/go-sequencer/adapters/lease. This
+// Deprecated: use github.com/faustbrian/go-sequencer/v2/adapters/lease. This
 // package remains supported for the longer of 180 days after successor public
 // availability and two subsequently published stable minor releases.
 package golease
@@ -9,7 +9,7 @@ import (
 	"context"
 	"time"
 
-	adapter "github.com/faustbrian/go-sequencer/adapters/lease"
+	adapter "github.com/faustbrian/go-sequencer/v2/adapters/lease"
 )
 
 const (

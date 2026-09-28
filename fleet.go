@@ -76,13 +76,15 @@ type FleetOptions struct {
 }
 
 // Fleet claims locally registered operations without a leader. A stopped Run
-// owns no goroutines. A shutdown-timeout or lease-loss failure requires the
-// process manager to terminate any handler that could not cooperate.
+// owns no polling or renewal goroutines. A cancellation-ignoring callback may
+// retain its execution goroutine; the process manager must terminate it.
 type Fleet struct {
-	plan       *Plan
-	store      LeaseStore
-	options    FleetOptions
-	operations map[OperationID]Operation
+	plan         *Plan
+	store        LeaseStore
+	options      FleetOptions
+	operations   map[OperationID]Operation
+	handlerSlots chan struct{}
+	observers    []*boundedObserver
 
 	mu            sync.RWMutex
 	state         RunnerState
@@ -132,7 +134,10 @@ func NewFleet(plan *Plan, store LeaseStore, options FleetOptions) (*Fleet, error
 	for _, operation := range plan.operations {
 		operations[operation.spec.ID] = operation
 	}
-	return &Fleet{plan: runner.plan, store: store, options: options, operations: operations, state: RunnerStarting}, nil
+	return &Fleet{
+		plan: runner.plan, store: store, options: options, operations: operations,
+		handlerSlots: make(chan struct{}, options.MaxConcurrency), observers: runner.observers, state: RunnerStarting,
+	}, nil
 }
 
 // State returns the current observable lifecycle state.
@@ -426,56 +431,92 @@ func (fleet *Fleet) waitForDrain(results <-chan error, active uint64) error {
 	return nil
 }
 
-func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation Operation, claim Claim) error {
-	if executionErr := attemptBudgetError(claim.Budget, operation.spec.Policy); executionErr != nil {
-		fleet.renewalStarts.Done()
-		state := classifyState(executionErr, operation.spec.Policy, claim.Budget.Attempt, claim.Budget.Exceptions)
-		completion := Completion{
-			Ownership: claim.Ownership(), From: Claimed, State: state,
-			At: fleet.options.Clock.Now(), ErrorDetail: persistentErrorDetail(executionErr),
-		}
-		completionContext, cancelCompletion := context.WithTimeout(context.WithoutCancel(ctx), fleet.options.ShutdownWait)
-		err := fleet.store.Complete(completionContext, completion)
-		cancelCompletion()
-		if err != nil {
-			return fmt.Errorf("sequencer: complete accepted attempt: %w", err)
-		}
-		fleet.observe(Event{Type: EventCompleted, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
-		return nil
-	}
+func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation Operation, claim Claim) (resultErr error) {
 	attemptParent := ctx
 	if operation.spec.Policy.Cancellation == CancellationDrainOnly {
 		attemptParent = context.Background()
 	}
 	attemptContext, cancelAttempt := context.WithCancel(attemptParent)
 	defer cancelAttempt()
-	renewContext, stopRenewal := context.WithCancel(renewalParent)
-	renewalReady := make(chan struct{})
-	renewalStopped := make(chan struct{})
-	renewalError := make(chan error, 1)
-	fleet.renewals.Go(func() {
-		fleet.renewLease(renewContext, renewalReady, cancelAttempt, claim.Ownership(), claim.Attempt.Number, claim.Until, renewalStopped, renewalError)
-	})
+	settlementParent, cancelSettlement := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelSettlement()
+	running := make(chan struct{})
+	stopRenewal, renewalError := fleet.startClaimRenewal(renewalParent, claim, running, func() { cancelAttempt(); cancelSettlement() })
 	fleet.renewalStarts.Done()
+	completionCommitted := false
+	renewalFailure := func() error {
+		// A nil fenced Complete is authoritative. Terminal persistence clears
+		// ownership, so a concurrent renewal can legitimately become stale.
+		if completionCommitted {
+			return nil
+		}
+		select {
+		case err := <-renewalError:
+			fleet.setState(RunnerFailed)
+			return err
+		default:
+			return nil
+		}
+	}
+	defer func() {
+		if err := stopRenewal(); err != nil {
+			resultErr = errors.Join(resultErr, err)
+			fleet.setState(RunnerFailed)
+		}
+		if err := renewalFailure(); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	complete := func(completion Completion, executionErr error) error {
+		if err := renewalFailure(); err != nil {
+			return err
+		}
+		completionContext, cancel := context.WithTimeout(settlementParent, fleet.options.ShutdownWait)
+		defer cancel()
+		if err := fleet.store.Complete(completionContext, completion); err != nil {
+			return fmt.Errorf("sequencer: complete accepted attempt: %w", errors.Join(err, renewalFailure()))
+		}
+		completionCommitted = true
+		if err := stopRenewal(); err != nil {
+			return err
+		}
+		if err := renewalFailure(); err != nil {
+			return err
+		}
+		fleet.observe(Event{Type: EventCompleted, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: completion.State, At: completion.At, Err: executionErr})
+		return nil
+	}
+	if err := renewalFailure(); err != nil {
+		return err
+	}
+	if executionErr := attemptBudgetError(claim.Budget, operation.spec.Policy); executionErr != nil {
+		state := classifyState(executionErr, operation.spec.Policy, claim.Budget.Attempt, claim.Budget.Exceptions)
+		completion := Completion{
+			Ownership: claim.Ownership(), From: Claimed, State: state,
+			At: fleet.options.Clock.Now(), ErrorDetail: persistentErrorDetail(executionErr),
+		}
+		return complete(completion, executionErr)
+	}
 	now := fleet.options.Clock.Now()
-	markContext, cancelMark := context.WithTimeout(context.WithoutCancel(ctx), fleet.options.ShutdownWait)
+	markContext, cancelMark := context.WithTimeout(settlementParent, fleet.options.ShutdownWait)
 	_, markErr := fleet.store.MarkRunning(markContext, claim.Ownership(), now)
 	cancelMark()
 	if markErr != nil {
-		stopRenewal()
-		<-renewalStopped
-		return fmt.Errorf("sequencer: mark accepted attempt running: %w", markErr)
+		return fmt.Errorf("sequencer: mark accepted attempt running: %w", errors.Join(markErr, renewalFailure()))
 	}
-	close(renewalReady)
+	if err := renewalFailure(); err != nil {
+		return err
+	}
+	close(running)
 	fleet.observe(Event{Type: EventRunning, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: Running, At: now})
 
-	worker := &Runner{options: fleet.options.RunnerOptions}
+	worker := &Runner{options: fleet.options.RunnerOptions, handlerSlots: fleet.handlerSlots, observers: fleet.observers}
 	executionResult := make(chan attemptExecutionResult, 1)
 	go func() {
 		output, actor, reason, err := worker.runAttempt(attemptContext, operation.spec, claim.Attempt)
 		executionResult <- attemptExecutionResult{output: output, actor: actor, reason: reason, err: err}
 	}()
-	result, renewalErr := waitForAttempt(executionResult, renewalError, stopRenewal, renewalStopped)
+	result, renewalErr := waitForAttempt(executionResult, renewalError)
 	if renewalErr != nil {
 		fleet.setState(RunnerFailed)
 		return fmt.Errorf("sequencer: renew accepted attempt lease: %w", renewalErr)
@@ -497,20 +538,23 @@ func (fleet *Fleet) executeClaim(ctx, renewalParent context.Context, operation O
 	if state == Retryable {
 		completion.EligibleAt = completion.At
 	}
-	completionContext, cancel := context.WithTimeout(context.Background(), fleet.options.ShutdownWait)
-	defer cancel()
-	if err := fleet.store.Complete(completionContext, completion); err != nil {
-		return fmt.Errorf("sequencer: complete accepted attempt: %w", err)
+	if isHandlerUnresponsive(executionErr) {
+		// Callback capacity remains retained. Close global admission before
+		// potentially blocking settlement, including claims already in flight.
+		fleet.setState(RunnerFailed)
 	}
-	fleet.observe(Event{Type: EventCompleted, Operation: claim.Attempt.OperationID, Channel: operation.spec.Channel, Attempt: claim.Attempt.Number, State: state, At: completion.At, Err: executionErr})
+	if err := complete(completion, executionErr); err != nil {
+		return err
+	}
+	if isHandlerUnresponsive(executionErr) {
+		return executionErr
+	}
 	return nil
 }
 
-func waitForAttempt(execution <-chan attemptExecutionResult, renewalFailure <-chan error, stopRenewal context.CancelFunc, renewalStopped <-chan struct{}) (attemptExecutionResult, error) {
+func waitForAttempt(execution <-chan attemptExecutionResult, renewalFailure <-chan error) (attemptExecutionResult, error) {
 	select {
 	case result := <-execution:
-		stopRenewal()
-		<-renewalStopped
 		select {
 		case err := <-renewalFailure:
 			return attemptExecutionResult{}, err
@@ -518,26 +562,30 @@ func waitForAttempt(execution <-chan attemptExecutionResult, renewalFailure <-ch
 			return result, nil
 		}
 	case err := <-renewalFailure:
-		stopRenewal()
-		<-renewalStopped
 		return attemptExecutionResult{}, err
 	}
 }
 
-func (fleet *Fleet) renewLease(ctx context.Context, ready <-chan struct{}, cancelAttempt context.CancelFunc, ownership Ownership, attempt uint, until time.Time, stopped chan<- struct{}, failed chan<- error) {
+func (fleet *Fleet) renewLease(ctx context.Context, ready <-chan struct{}, cancelAttempt context.CancelFunc, ownership Ownership, attempt uint, until time.Time, stopped chan<- struct{}, failed chan<- error, firstRenewed chan<- struct{}) {
 	defer close(stopped)
-	select {
-	case <-ctx.Done():
-		return
-	case <-ready:
+	if firstRenewed == nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ready:
+		}
 	}
-	ticker := time.NewTicker(fleet.options.RenewInterval)
-	defer ticker.Stop()
+	initialDelay := fleet.options.RenewInterval
+	if firstRenewed != nil {
+		initialDelay = 0
+	}
+	timer := time.NewTimer(initialDelay)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			now := fleet.options.Clock.Now()
 			remaining := until.Sub(now)
 			if remaining <= 0 {
@@ -563,15 +611,25 @@ func (fleet *Fleet) renewLease(ctx context.Context, ready <-chan struct{}, cance
 				return
 			}
 			until = renewedUntil
-			fleet.observe(Event{Type: EventHeartbeat, Operation: ownership.OperationID, Attempt: attempt, State: Running, At: now})
+			initial := firstRenewed != nil
+			if initial {
+				close(firstRenewed)
+				firstRenewed = nil
+			}
+			if !initial {
+				select {
+				case <-ready:
+					fleet.observe(Event{Type: EventHeartbeat, Operation: ownership.OperationID, Attempt: attempt, State: Running, At: now})
+				default:
+				}
+			}
+			timer.Reset(fleet.options.RenewInterval)
 		}
 	}
 }
 
 func (fleet *Fleet) observe(event Event) {
-	for _, observer := range fleet.options.Observers {
-		if observer != nil {
-			observer.Observe(event)
-		}
+	for _, observer := range fleet.observers {
+		observer.notify(event)
 	}
 }

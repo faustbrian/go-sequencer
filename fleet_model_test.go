@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 func TestFleetReplicasClaimLeaderlesslyWithoutDuplicateCompletion(t *testing.T) {
@@ -17,7 +17,6 @@ func TestFleetReplicasClaimLeaderlesslyWithoutDuplicateCompletion(t *testing.T) 
 	const operationCount = 12
 	var mu sync.Mutex
 	executions := make(map[sequencer.OperationID]int, operationCount)
-	completed := make(chan struct{}, operationCount)
 	specs := make([]sequencer.OperationSpec, operationCount)
 	for index := range specs {
 		spec := validSpec(sequencer.OperationID(fmt.Sprintf("fleet.replica-%02d", index)))
@@ -39,7 +38,6 @@ func TestFleetReplicasClaimLeaderlesslyWithoutDuplicateCompletion(t *testing.T) 
 			if event.State != sequencer.Succeeded || event.Err != nil {
 				t.Errorf("completion event = %+v", event)
 			}
-			completed <- struct{}{}
 		}
 	})
 	newReplica := func(owner string) *sequencer.Fleet {
@@ -55,13 +53,41 @@ func TestFleetReplicasClaimLeaderlesslyWithoutDuplicateCompletion(t *testing.T) 
 	}
 	first, second := newReplica("pod-a"), newReplica("pod-b")
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	firstDone := startFleet(ctx, t, first)
 	secondDone := startFleet(ctx, t, second)
-	for range operationCount {
+	// Observer delivery is best-effort with bounded overflow. Persisted terminal
+	// state, not a telemetry count, proves every shared operation completed.
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+waitForPersistence:
+	for {
+		allSucceeded := true
+		for _, spec := range specs {
+			record, snapshotErr := store.Snapshot(context.Background(), spec.ID, spec.Version)
+			if snapshotErr != nil || record.State != sequencer.Succeeded {
+				allSucceeded = false
+				break
+			}
+		}
+		if allSucceeded {
+			break waitForPersistence
+		}
 		select {
-		case <-completed:
-		case <-time.After(2 * time.Second):
-			t.Fatal("replicas did not complete the shared plan")
+		case <-poll.C:
+		case <-deadline.C:
+			var firstErr, secondErr error
+			select {
+			case firstErr = <-firstDone:
+			default:
+			}
+			select {
+			case secondErr = <-secondDone:
+			default:
+			}
+			t.Fatalf("replicas did not complete the shared plan: first state=%v error=%v; second state=%v error=%v", first.State(), firstErr, second.State(), secondErr)
 		}
 	}
 	cancel()

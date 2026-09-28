@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 func FuzzCompilePlanDeterminism(fuzz *testing.F) {
@@ -50,7 +50,7 @@ func FuzzCompilePlanDeterminism(fuzz *testing.F) {
 			specs[count-1].DependencyRefs = []sequencer.DependencyRef{{ID: specs[0].ID, Version: 1, Checksum: specs[0].Checksum}}
 			want = sequencer.ErrDependencyCycle
 		case 2:
-			specs[0].DependencyRefs = []sequencer.DependencyRef{{ID: "absent", Version: 1, Checksum: "sha256:absent"}}
+			specs[0].DependencyRefs = []sequencer.DependencyRef{{ID: "absent", Version: 1, Checksum: checksumFor("absent")}}
 			want = sequencer.ErrMissingDependency
 		case 3:
 			specs = append(specs, specs[0])
@@ -103,7 +103,7 @@ func FuzzOperationDefinitionBoundaries(fuzz *testing.F) {
 			spec.Tags[index] = tag
 		}
 		if dependency != "" {
-			spec.DependencyRefs = []sequencer.DependencyRef{{ID: sequencer.OperationID(dependency), Version: 1, Checksum: "sha256:dependency"}}
+			spec.DependencyRefs = []sequencer.DependencyRef{{ID: sequencer.OperationID(dependency), Version: 1, Checksum: checksumFor("dependency")}}
 		}
 
 		first, firstErr := sequencer.NewOperation(spec)
@@ -144,7 +144,7 @@ func FuzzMixedBinaryClaimsNeverCrossLocalVersion(fuzz *testing.F) {
 	fuzz.Add(uint8(2))
 	fuzz.Fuzz(func(t *testing.T, selector uint8) {
 		version := uint(selector%2) + 1
-		checksums := map[uint]string{1: "sha256:v1", 2: "sha256:v2"}
+		checksums := map[uint]string{1: checksumFor("v1"), 2: checksumFor("v2")}
 		store := memory.New()
 		now := time.Date(2026, 8, 9, 13, 0, 0, 0, time.UTC)
 		if err := store.Register(context.Background(), []sequencer.Registration{
@@ -169,7 +169,7 @@ func FuzzMixedBinaryClaimsNeverCrossLocalVersion(fuzz *testing.F) {
 func fuzzSpec(index int) sequencer.OperationSpec {
 	return sequencer.OperationSpec{
 		ID:      sequencer.OperationID(fmt.Sprintf("operation-%03d", index)),
-		Version: 1, Checksum: fmt.Sprintf("sha256:%d", index),
+		Version: 1, Checksum: checksumFor(fmt.Sprintf("%d", index)),
 		Description: "fuzz operation", Channel: "fuzz",
 		Policy: sequencer.Policy{Mode: sequencer.OneTime, MaxAttempts: 1, MaxExceptions: 1, Timeout: time.Second},
 		Handler: sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	sequencerpostgres "github.com/faustbrian/go-sequencer/postgres"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	sequencerpostgres "github.com/faustbrian/go-sequencer/v2/postgres"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/moby/moby/api/types/container"
@@ -25,6 +25,8 @@ import (
 	tcnetwork "github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
+
+func testChecksum(value string) string { return sequencer.ChecksumBytes([]byte(value)) }
 
 const postgresIntegrationImage = "postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
 
@@ -165,7 +167,7 @@ WHERE operation_id = 'migration.historical-reverse' AND version = 1 AND state = 
 		t.Fatalf("legacy historical compensation reset rows = %d, want 0", result.RowsAffected())
 	}
 	registration := sequencer.Registration{
-		ID: "failover.operation", Version: 1, Checksum: "sha256:failover", Channel: "deploy",
+		ID: "failover.operation", Version: 1, Checksum: testChecksum("sha256:failover"), Channel: "deploy",
 	}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, time.Now()); err != nil {
 		t.Fatal(err)
@@ -376,7 +378,7 @@ SELECT EXISTS (
 		t.Fatal(err)
 	}
 	registration := sequencer.Registration{
-		ID: "promoted.operation", Version: 1, Checksum: "sha256:promoted-operation",
+		ID: "promoted.operation", Version: 1, Checksum: testChecksum("sha256:promoted-operation"),
 	}
 	if err = store.Register(ctx, []sequencer.Registration{registration}, time.Now()); err != nil {
 		t.Fatal(err)
@@ -505,8 +507,9 @@ INSERT INTO sequencer_operations (
     operation_id, version, checksum, dependencies, state, eligible_at,
     created_at, updated_at
 ) VALUES
-    ('migration.empty', 1, 'sha256:empty', '{}', 'eligible', clock_timestamp(), clock_timestamp(), clock_timestamp()),
-    ('migration.legacy', 1, 'sha256:legacy', ARRAY['schema'], 'eligible', clock_timestamp(), clock_timestamp(), clock_timestamp())`); err != nil {
+	    ('migration.empty', 1, $1, '{}', 'eligible', clock_timestamp(), clock_timestamp(), clock_timestamp()),
+	    ('migration.legacy', 1, $2, ARRAY['schema'], 'eligible', clock_timestamp(), clock_timestamp(), clock_timestamp())`,
+		testChecksum("sha256:empty"), testChecksum("sha256:legacy")); err != nil {
 		t.Fatal(err)
 	}
 	applyMigration(t, ctx, pool, "00002_pin_dependency_definitions.sql")
@@ -536,10 +539,11 @@ SELECT dependency_refs::text FROM sequencer_operations WHERE operation_id = 'mig
 	if err != nil {
 		t.Fatal(err)
 	}
+	verifyPostgresAuditSecurity(t, ctx, store)
 	t.Run("compensation reset fence", func(t *testing.T) {
-		forward := sequencer.DependencyRef{ID: "compensation.forward", Version: 1, Checksum: "sha256:compensation-forward"}
+		forward := sequencer.DependencyRef{ID: "compensation.forward", Version: 1, Checksum: testChecksum("sha256:compensation-forward")}
 		compensation := sequencer.Registration{
-			ID: "compensation.reverse", Version: 1, Checksum: "sha256:compensation-reverse",
+			ID: "compensation.reverse", Version: 1, Checksum: testChecksum("sha256:compensation-reverse"),
 			DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 		}
 		if err := store.Register(ctx, []sequencer.Registration{
@@ -646,9 +650,9 @@ WHERE operation_id = $1 AND version = $2`, compensation.ID, compensation.Version
 		}
 	})
 	t.Run("compensation after skipped forward", func(t *testing.T) {
-		forward := sequencer.DependencyRef{ID: "skipped-compensation.forward", Version: 1, Checksum: "sha256:skipped-compensation-forward"}
+		forward := sequencer.DependencyRef{ID: "skipped-compensation.forward", Version: 1, Checksum: testChecksum("sha256:skipped-compensation-forward")}
 		compensation := sequencer.Registration{
-			ID: "skipped-compensation.reverse", Version: 1, Checksum: "sha256:skipped-compensation-reverse",
+			ID: "skipped-compensation.reverse", Version: 1, Checksum: testChecksum("sha256:skipped-compensation-reverse"),
 			DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 		}
 		if err := store.Register(ctx, []sequencer.Registration{
@@ -684,10 +688,10 @@ WHERE operation_id = $1 AND version = $2`, compensation.ID, compensation.Version
 		}
 	})
 	t.Run("nested compensation reset does not leak counter", func(t *testing.T) {
-		forward := sequencer.DependencyRef{ID: "nested-compensation.forward", Version: 1, Checksum: "sha256:nested-compensation-forward"}
-		middle := sequencer.DependencyRef{ID: "nested-compensation.middle", Version: 1, Checksum: "sha256:nested-compensation-middle"}
+		forward := sequencer.DependencyRef{ID: "nested-compensation.forward", Version: 1, Checksum: testChecksum("sha256:nested-compensation-forward")}
+		middle := sequencer.DependencyRef{ID: "nested-compensation.middle", Version: 1, Checksum: testChecksum("sha256:nested-compensation-middle")}
 		last := sequencer.Registration{
-			ID: "nested-compensation.last", Version: 1, Checksum: "sha256:nested-compensation-last",
+			ID: "nested-compensation.last", Version: 1, Checksum: testChecksum("sha256:nested-compensation-last"),
 			DependencyRefs: []sequencer.DependencyRef{middle}, Compensates: &middle,
 		}
 		if err := store.Register(ctx, []sequencer.Registration{
@@ -833,9 +837,9 @@ WHERE operation_id = $1 AND version = $2`, compensation.ID, compensation.Version
 		}
 	})
 	t.Run("legacy compensation claim cannot cross reset", func(t *testing.T) {
-		forward := sequencer.DependencyRef{ID: "legacy-race.forward", Version: 1, Checksum: "sha256:legacy-race-forward"}
+		forward := sequencer.DependencyRef{ID: "legacy-race.forward", Version: 1, Checksum: testChecksum("sha256:legacy-race-forward")}
 		compensation := sequencer.Registration{
-			ID: "legacy-race.reverse", Version: 1, Checksum: "sha256:legacy-race-reverse",
+			ID: "legacy-race.reverse", Version: 1, Checksum: testChecksum("sha256:legacy-race-reverse"),
 			DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 		}
 		if err := store.Register(ctx, []sequencer.Registration{
@@ -938,9 +942,9 @@ WHERE forward.operation_id = $1 AND forward.version = $2`,
 		}
 	})
 	t.Run("committed compensation claim blocks concurrent reset", func(t *testing.T) {
-		forward := sequencer.DependencyRef{ID: "claim-first.forward", Version: 1, Checksum: "sha256:claim-first-forward"}
+		forward := sequencer.DependencyRef{ID: "claim-first.forward", Version: 1, Checksum: testChecksum("sha256:claim-first-forward")}
 		compensation := sequencer.Registration{
-			ID: "claim-first.reverse", Version: 1, Checksum: "sha256:claim-first-reverse",
+			ID: "claim-first.reverse", Version: 1, Checksum: testChecksum("sha256:claim-first-reverse"),
 			DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 		}
 		if err := store.Register(ctx, []sequencer.Registration{
@@ -1034,7 +1038,7 @@ WHERE pid = $1`, resetPID).Scan(&waiting); err != nil {
 	const recoveryBatchSize = 32
 	for index := recoveryBatchSize; index >= 0; index-- {
 		id := sequencer.OperationID(fmt.Sprintf("recovery.batch-%02d", index))
-		if err := store.Register(ctx, []sequencer.Registration{{ID: id, Version: 1, Checksum: "sha256:" + string(id)}}, time.Now()); err != nil {
+		if err := store.Register(ctx, []sequencer.Registration{{ID: id, Version: 1, Checksum: testChecksum("sha256:" + string(id))}}, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
@@ -1061,20 +1065,20 @@ WHERE operation_id LIKE 'recovery.batch-%'`, expiredAt); err != nil {
 	if recovered, err := store.RecoverExpired(ctx, time.Now()); err != nil || recovered != 1 {
 		t.Fatalf("second bounded RecoverExpired() = %d, %v; want 1", recovered, err)
 	}
-	oversizedDependencies := make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies)
-	for index := range oversizedDependencies {
-		oversizedDependencies[index] = sequencer.DependencyRef{
+	invalidDependencies := make([]sequencer.DependencyRef, sequencer.DefaultMaxDependencies)
+	for index := range invalidDependencies {
+		invalidDependencies[index] = sequencer.DependencyRef{
 			ID:      sequencer.OperationID(fmt.Sprintf("dependency-%03d", index)),
 			Version: 1, Checksum: strings.Repeat("x", sequencer.DefaultMaxChecksumBytes),
 		}
 	}
 	if err := store.Register(ctx, []sequencer.Registration{{
-		ID: "persisted.oversized-write", Version: 1, Checksum: "sum",
-		DependencyRefs: oversizedDependencies,
-	}}, time.Now()); !errors.Is(err, sequencer.ErrResourceLimit) {
-		t.Fatalf("Register(oversized definition) error = %v", err)
+		ID: "persisted.invalid-checksum-write", Version: 1, Checksum: testChecksum("sum"),
+		DependencyRefs: invalidDependencies,
+	}}, time.Now()); !errors.Is(err, sequencer.ErrInvalidOperation) {
+		t.Fatalf("Register(noncanonical dependency checksum) error = %v", err)
 	}
-	boundedRegistration := sequencer.Registration{ID: "persisted.bounds", Version: 1, Checksum: "sha256:bounds"}
+	boundedRegistration := sequencer.Registration{ID: "persisted.bounds", Version: 1, Checksum: testChecksum("sha256:bounds")}
 	if err := store.Register(ctx, []sequencer.Registration{boundedRegistration}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -1115,15 +1119,15 @@ INSERT INTO sequencer_attempts (
 	if _, err := store.History(ctx, boundedRegistration.ID, boundedRegistration.Version, 1); !errors.Is(err, sequencer.ErrDefinitionDrift) {
 		t.Fatalf("History(oversized output) error = %v", err)
 	}
-	schemaV1 := sequencer.DependencyRef{ID: "schema", Version: 1, Checksum: "sha256:schema"}
+	schemaV1 := sequencer.DependencyRef{ID: "schema", Version: 1, Checksum: testChecksum("sha256:schema")}
 	registration := sequencer.Registration{
-		ID: "postal.backfill", Version: 1, Checksum: "sha256:postal",
+		ID: "postal.backfill", Version: 1, Checksum: testChecksum("sha256:postal"),
 		DependencyRefs: []sequencer.DependencyRef{schemaV1}, UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
 	}
-	if err := store.Register(ctx, []sequencer.Registration{{ID: "schema", Version: 1, Checksum: "sha256:schema"}}, time.Now()); err != nil {
+	if err := store.Register(ctx, []sequencer.Registration{{ID: "schema", Version: 1, Checksum: testChecksum("sha256:schema")}}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	channelRegistration := sequencer.Registration{ID: "channel.operation", Version: 1, Checksum: "sha256:channel", Channel: "deploy"}
+	channelRegistration := sequencer.Registration{ID: "channel.operation", Version: 1, Checksum: testChecksum("sha256:channel"), Channel: "deploy"}
 	if err := store.Register(ctx, []sequencer.Registration{channelRegistration}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -1147,7 +1151,7 @@ INSERT INTO sequencer_attempts (
 		t.Fatalf("registration audit = %+v, %v", registrationAudit, err)
 	}
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
-		Candidates:    []sequencer.ClaimCandidate{{ID: "schema", Version: 1, Checksum: "sha256:wrong"}},
+		Candidates:    []sequencer.ClaimCandidate{{ID: "schema", Version: 1, Checksum: testChecksum("sha256:wrong")}},
 		Owner:         "wrong-binary",
 		LeaseDuration: time.Minute,
 	}); !errors.Is(err, sequencer.ErrChecksumDrift) {
@@ -1164,19 +1168,19 @@ INSERT INTO sequencer_attempts (
 		t.Fatal(err)
 	}
 	if _, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
-		Candidates: []sequencer.ClaimCandidate{{ID: "migration.legacy", Version: 1, Checksum: "sha256:legacy"}},
+		Candidates: []sequencer.ClaimCandidate{{ID: "migration.legacy", Version: 1, Checksum: testChecksum("sha256:legacy")}},
 		Owner:      "legacy-before-resolution", LeaseDuration: time.Minute,
 	}); !errors.Is(err, sequencer.ErrNoEligibleOperation) {
 		t.Fatalf("unresolved legacy ClaimNext() error = %v", err)
 	}
 	if err := store.Register(ctx, []sequencer.Registration{{
-		ID: "migration.legacy", Version: 1, Checksum: "sha256:legacy", Channel: "deploy",
+		ID: "migration.legacy", Version: 1, Checksum: testChecksum("sha256:legacy"), Channel: "deploy",
 		DependencyRefs: []sequencer.DependencyRef{schemaV1},
 	}}, time.Now()); err != nil {
 		t.Fatalf("resolve legacy dependencies: %v", err)
 	}
 	legacyClaim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
-		Candidates: []sequencer.ClaimCandidate{{ID: "migration.legacy", Version: 1, Checksum: "sha256:legacy"}},
+		Candidates: []sequencer.ClaimCandidate{{ID: "migration.legacy", Version: 1, Checksum: testChecksum("sha256:legacy")}},
 		Owner:      "legacy-after-resolution", LeaseDuration: time.Minute,
 	})
 	if err != nil || legacyClaim.Attempt.OperationID != "migration.legacy" {
@@ -1187,24 +1191,24 @@ INSERT INTO sequencer_attempts (
 	}
 	if err := store.Register(ctx, []sequencer.Registration{{
 		ID: registration.ID, Version: registration.Version, Checksum: registration.Checksum,
-		DependencyRefs: []sequencer.DependencyRef{{ID: "schema", Version: 2, Checksum: "sha256:schema-v2"}},
+		DependencyRefs: []sequencer.DependencyRef{{ID: "schema", Version: 2, Checksum: testChecksum("sha256:schema-v2")}},
 	}}, time.Now()); !errors.Is(err, sequencer.ErrDefinitionDrift) {
 		t.Fatalf("dependency drift error = %v", err)
 	}
-	if err := store.Register(ctx, []sequencer.Registration{{ID: registration.ID, Version: 1, Checksum: "sha256:drift"}}, time.Now()); !errors.Is(err, sequencer.ErrChecksumDrift) {
+	if err := store.Register(ctx, []sequencer.Registration{{ID: registration.ID, Version: 1, Checksum: testChecksum("sha256:drift")}}, time.Now()); !errors.Is(err, sequencer.ErrChecksumDrift) {
 		t.Fatalf("checksum drift error = %v", err)
 	}
-	if err := store.Register(ctx, []sequencer.Registration{{ID: "schema", Version: 2, Checksum: "sha256:schema-v2"}}, time.Now()); err != nil {
+	if err := store.Register(ctx, []sequencer.Registration{{ID: "schema", Version: 2, Checksum: testChecksum("sha256:schema-v2")}}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, source := range []sequencer.State{sequencer.Retryable, sequencer.Deferred} {
 		id := sequencer.OperationID("claim." + source.String())
-		if err := store.Register(ctx, []sequencer.Registration{{ID: id, Version: 1, Checksum: "sha256:" + source.String()}}, time.Now()); err != nil {
+		if err := store.Register(ctx, []sequencer.Registration{{ID: id, Version: 1, Checksum: testChecksum("sha256:" + source.String())}}, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		first, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
-			Candidates: []sequencer.ClaimCandidate{{ID: id, Version: 1, Checksum: "sha256:" + source.String()}},
+			Candidates: []sequencer.ClaimCandidate{{ID: id, Version: 1, Checksum: testChecksum("sha256:" + source.String())}},
 			Owner:      "first", LeaseDuration: time.Minute,
 		})
 		if err != nil {
@@ -1220,7 +1224,7 @@ INSERT INTO sequencer_attempts (
 			t.Fatal(err)
 		}
 		second, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
-			Candidates: []sequencer.ClaimCandidate{{ID: id, Version: 1, Checksum: "sha256:" + source.String()}},
+			Candidates: []sequencer.ClaimCandidate{{ID: id, Version: 1, Checksum: testChecksum("sha256:" + source.String())}},
 			Owner:      "second", LeaseDuration: time.Minute,
 		})
 		if err != nil {
@@ -1252,7 +1256,7 @@ INSERT INTO sequencer_attempts (
 			defer wait.Done()
 			claim, claimErr := store.ClaimNext(ctx, sequencer.ClaimRequest{
 				OperationIDs: []sequencer.OperationID{registration.ID},
-				Owner:        string(rune('a' + index)), LeaseDuration: 50 * time.Millisecond,
+				Owner:        fmt.Sprintf("concurrent-owner-%02d", index), LeaseDuration: 50 * time.Millisecond,
 			})
 			if claimErr == nil {
 				winners <- claim
@@ -1284,7 +1288,7 @@ INSERT INTO sequencer_attempts (
 		t.Fatalf("recovery claim = %+v, %v", claim, err)
 	}
 
-	failed := sequencer.Registration{ID: "postal.failed", Version: 1, Checksum: "sha256:failed"}
+	failed := sequencer.Registration{ID: "postal.failed", Version: 1, Checksum: testChecksum("sha256:failed")}
 	if err := store.Register(ctx, []sequencer.Registration{failed}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -1328,14 +1332,14 @@ INSERT INTO sequencer_attempts (
 	}
 
 	rolling := []sequencer.Registration{
-		{ID: "rolling", Version: 1, Checksum: "sha256:v1"},
-		{ID: "rolling", Version: 2, Checksum: "sha256:v2"},
+		{ID: "rolling", Version: 1, Checksum: testChecksum("sha256:v1")},
+		{ID: "rolling", Version: 2, Checksum: testChecksum("sha256:v2")},
 	}
 	if err := store.Register(ctx, rolling, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	oldClaim, err := store.ClaimNext(ctx, sequencer.ClaimRequest{
-		Candidates: []sequencer.ClaimCandidate{{ID: "rolling", Version: 1, Checksum: "sha256:v1"}},
+		Candidates: []sequencer.ClaimCandidate{{ID: "rolling", Version: 1, Checksum: testChecksum("sha256:v1")}},
 		Owner:      "old-binary", LeaseDuration: time.Minute,
 	})
 	if err != nil || oldClaim.Attempt.Version != 1 {
@@ -1357,10 +1361,10 @@ INSERT INTO sequencer_attempts (
 	}
 
 	unknowns := []sequencer.Registration{
-		{ID: "unknown.block", Version: 1, Checksum: "sha256:unknown-block"},
-		{ID: "unknown.replay", Version: 1, Checksum: "sha256:unknown-replay", UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent},
-		{ID: "unknown.dead", Version: 1, Checksum: "sha256:unknown-dead", DeadLetter: true},
-		{ID: "unknown.concurrent", Version: 1, Checksum: "sha256:unknown-concurrent"},
+		{ID: "unknown.block", Version: 1, Checksum: testChecksum("sha256:unknown-block")},
+		{ID: "unknown.replay", Version: 1, Checksum: testChecksum("sha256:unknown-replay"), UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent},
+		{ID: "unknown.dead", Version: 1, Checksum: testChecksum("sha256:unknown-dead"), DeadLetter: true},
+		{ID: "unknown.concurrent", Version: 1, Checksum: testChecksum("sha256:unknown-concurrent")},
 	}
 	for _, unknown := range unknowns {
 		if err := store.Register(ctx, []sequencer.Registration{unknown}, time.Now()); err != nil {
@@ -1477,7 +1481,7 @@ INSERT INTO sequencer_attempts (
 
 	compensates := schemaV1
 	compensation := sequencer.Registration{
-		ID: "schema.compensation", Version: 1, Checksum: "sha256:compensation",
+		ID: "schema.compensation", Version: 1, Checksum: testChecksum("sha256:compensation"),
 		DependencyRefs: []sequencer.DependencyRef{schemaV1}, Compensates: &compensates,
 	}
 	if err := store.Register(ctx, []sequencer.Registration{compensation}, time.Now()); err != nil {
@@ -1488,7 +1492,7 @@ INSERT INTO sequencer_attempts (
 		t.Fatalf("compensation snapshot = %+v, %v", compensationSnapshot, err)
 	}
 
-	canceled := sequencer.Registration{ID: "reset.canceled", Version: 1, Checksum: "sha256:canceled"}
+	canceled := sequencer.Registration{ID: "reset.canceled", Version: 1, Checksum: testChecksum("sha256:canceled")}
 	if err := store.Register(ctx, []sequencer.Registration{canceled}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -1509,7 +1513,7 @@ INSERT INTO sequencer_attempts (
 		t.Fatalf("Reset(canceled) error = %v", err)
 	}
 
-	corrupt := sequencer.Registration{ID: "recovery.corrupt", Version: 1, Checksum: "sha256:recovery-corrupt"}
+	corrupt := sequencer.Registration{ID: "recovery.corrupt", Version: 1, Checksum: testChecksum("sha256:recovery-corrupt")}
 	if err := store.Register(ctx, []sequencer.Registration{corrupt}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -1561,7 +1565,7 @@ WHERE operation_id = $1 AND version = $2`, corrupt.ID, corrupt.Version); err != 
 	}
 
 	for _, boundary := range []string{"mark-running-missing", "mark-running-mismatch", "complete-missing", "complete-mismatch"} {
-		registration := sequencer.Registration{ID: sequencer.OperationID("corrupt." + boundary), Version: 1, Checksum: "sha256:" + boundary}
+		registration := sequencer.Registration{ID: sequencer.OperationID("corrupt." + boundary), Version: 1, Checksum: testChecksum("sha256:" + boundary)}
 		if err := store.Register(ctx, []sequencer.Registration{registration}, time.Now()); err != nil {
 			t.Fatal(err)
 		}
@@ -1620,14 +1624,14 @@ func preparePostgresCompensations(
 	t.Helper()
 	forward := sequencer.DependencyRef{
 		ID: sequencer.OperationID(prefix + ".forward"), Version: 1,
-		Checksum: "sha256:" + prefix + "-forward",
+		Checksum: testChecksum("sha256:" + prefix + "-forward"),
 	}
 	compensations := make([]sequencer.Registration, count)
 	registrations := []sequencer.Registration{{ID: forward.ID, Version: forward.Version, Checksum: forward.Checksum}}
 	for index := range compensations {
 		compensations[index] = sequencer.Registration{
 			ID: sequencer.OperationID(fmt.Sprintf("%s.reverse-%d", prefix, index)), Version: 1,
-			Checksum:       "sha256:" + prefix + fmt.Sprintf("-reverse-%d", index),
+			Checksum:       testChecksum(prefix + fmt.Sprintf("-reverse-%d", index)),
 			DependencyRefs: []sequencer.DependencyRef{forward}, Compensates: &forward,
 		}
 		registrations = append(registrations, compensations[index])

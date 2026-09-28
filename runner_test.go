@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	goretry "github.com/faustbrian/go-sequencer/adapters/retry"
-	"github.com/faustbrian/go-sequencer/memory"
-	"github.com/faustbrian/go-sequencer/sequencertest"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	goretry "github.com/faustbrian/go-sequencer/v2/adapters/retry"
+	"github.com/faustbrian/go-sequencer/v2/memory"
+	"github.com/faustbrian/go-sequencer/v2/sequencertest"
 )
 
 func TestRunnerExecutesPlanInOrderAndReportsDurableResults(t *testing.T) {
@@ -25,7 +25,7 @@ func TestRunnerExecutesPlanInOrderAndReportsDurableResults(t *testing.T) {
 	operation := func(id sequencer.OperationID, dependencies ...sequencer.OperationID) sequencer.OperationSpec {
 		spec := validSpec(id)
 		for _, dependency := range dependencies {
-			spec.DependencyRefs = append(spec.DependencyRefs, sequencer.DependencyRef{ID: dependency, Version: 1, Checksum: "sha256:0123456789abcdef"})
+			spec.DependencyRefs = append(spec.DependencyRefs, sequencer.DependencyRef{ID: dependency, Version: 1, Checksum: validSpec(dependency).Checksum})
 		}
 		spec.Handler = sequencer.HandlerFunc(func(_ context.Context, attempt sequencer.Attempt) (sequencer.Output, error) {
 			mu.Lock()
@@ -478,7 +478,7 @@ func TestRunnerPinsLocalRegistryAcrossRollingDeploymentAndRollback(t *testing.T)
 	store := memory.New()
 	now := time.Now()
 	if err := store.Register(context.Background(), []sequencer.Registration{{
-		ID: "rolling", Version: 2, Checksum: "sha256:v2", Channel: "deploy",
+		ID: "rolling", Version: 2, Checksum: checksumFor("v2"), Channel: "deploy",
 	}}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestRunnerPinsLocalRegistryAcrossRollingDeploymentAndRollback(t *testing.T)
 		})
 		return spec
 	}
-	oldPlan, err := sequencer.CompilePlan([]sequencer.OperationSpec{operation(1, "sha256:v1")}, sequencer.PlanOptions{})
+	oldPlan, err := sequencer.CompilePlan([]sequencer.OperationSpec{operation(1, checksumFor("v1"))}, sequencer.PlanOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func TestRunnerPinsLocalRegistryAcrossRollingDeploymentAndRollback(t *testing.T)
 		t.Fatalf("old binary executions = %v", executed)
 	}
 
-	newPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{operation(2, "sha256:v2")}, sequencer.PlanOptions{})
+	newPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{operation(2, checksumFor("v2"))}, sequencer.PlanOptions{})
 	newRunner, _ := sequencer.NewRunner(newPlan, store, sequencer.RunnerOptions{Owner: "new-pod"})
 	if _, err := newRunner.Execute(context.Background()); err != nil {
 		t.Fatal(err)
@@ -521,7 +521,7 @@ func TestRunnerPinsLocalRegistryAcrossRollingDeploymentAndRollback(t *testing.T)
 	if len(executed) != 2 {
 		t.Fatalf("rollback executions = %v, want no re-execution", executed)
 	}
-	driftPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{operation(1, "sha256:changed")}, sequencer.PlanOptions{})
+	driftPlan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{operation(1, checksumFor("changed"))}, sequencer.PlanOptions{})
 	driftRunner, _ := sequencer.NewRunner(driftPlan, store, sequencer.RunnerOptions{Owner: "drifted-pod"})
 	if _, err := driftRunner.Execute(context.Background()); !errors.Is(err, sequencer.ErrChecksumDrift) {
 		t.Fatalf("drifted Execute() error = %v", err)
@@ -694,6 +694,102 @@ func TestRunnerRejectsSuccessReturnedAfterAttemptDeadline(t *testing.T) {
 	}
 }
 
+func TestRunnerDeadlineReturnsWhenHandlerIgnoresCancellation(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	started := make(chan struct{})
+	spec := validSpec("deadline.uncooperative")
+	spec.Policy.Timeout = 10 * time.Millisecond
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		close(started)
+		<-release
+		return sequencer.Output{}, nil
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "replica"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, runErr := runner.Execute(context.Background()); done <- runErr }()
+	<-started
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, sequencer.ErrUnknownResult) {
+			t.Fatalf("Execute() error = %v, want ErrUnknownResult", runErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Execute() remained blocked after the operation deadline")
+	}
+}
+
+func TestRunnerObserverCannotBlockExecution(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	started := make(chan struct{})
+	var once sync.Once
+	observer := sequencer.ObserverFunc(func(sequencer.Event) {
+		once.Do(func() { close(started) })
+		<-release
+	})
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{validSpec("observer.blocking")}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{Owner: "replica", Observers: []sequencer.Observer{observer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, runErr := runner.Execute(context.Background()); done <- runErr }()
+	<-started
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Fatalf("Execute() error = %v", runErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Execute() remained blocked by observer")
+	}
+}
+
+func TestRunnerObserverReceivesSanitizedErrorClassification(t *testing.T) {
+	secret := "password=hunter2"
+	spec := validSpec("observer.error")
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		return sequencer.Output{}, sequencer.Permanent(errors.New(secret))
+	})
+	events := make(chan sequencer.Event, 4)
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := sequencer.NewRunner(plan, memory.New(), sequencer.RunnerOptions{
+		Owner: "replica", Observers: []sequencer.Observer{sequencer.ObserverFunc(func(event sequencer.Event) { events <- event })},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runner.Execute(context.Background())
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Type == sequencer.EventCompleted {
+				if !errors.Is(event.Err, sequencer.ErrPermanent) || strings.Contains(event.Err.Error(), secret) {
+					t.Fatalf("observer error = %v", event.Err)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("missing completed event")
+		}
+	}
+}
+
 func TestRunnerRecordsDrainOnlyDeadlineAsIndeterminate(t *testing.T) {
 	t.Parallel()
 
@@ -754,7 +850,7 @@ func TestRunnerDoesNotExecuteRecoveredAttemptBeyondSharedBudget(t *testing.T) {
 		t.Fatalf("RecoverExpired() = %d, %v", recovered, err)
 	}
 	called := false
-	var events []sequencer.EventType
+	eventsDelivered := make(chan sequencer.EventType, 2)
 	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
 		called = true
 		return sequencer.Output{}, nil
@@ -766,7 +862,7 @@ func TestRunnerDoesNotExecuteRecoveredAttemptBeyondSharedBudget(t *testing.T) {
 	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{
 		Owner: "replacement", Clock: newManualClock(now.Add(2 * time.Second)),
 		Observers: []sequencer.Observer{sequencer.ObserverFunc(func(event sequencer.Event) {
-			events = append(events, event.Type)
+			eventsDelivered <- event.Type
 		})},
 	})
 	if err != nil {
@@ -779,6 +875,15 @@ func TestRunnerDoesNotExecuteRecoveredAttemptBeyondSharedBudget(t *testing.T) {
 	history, err := store.History(context.Background(), spec.ID, spec.Version, 2)
 	if err != nil || len(history) != 2 || history[1].State != sequencer.Failed || history[1].ErrorDetail != sequencer.ErrBudgetExhausted.Error() {
 		t.Fatalf("History() = %+v, %v", history, err)
+	}
+	var events []sequencer.EventType
+	for range 2 {
+		select {
+		case event := <-eventsDelivered:
+			events = append(events, event)
+		case <-time.After(time.Second):
+			t.Fatal("recovery observations missing")
+		}
 	}
 	if want := []sequencer.EventType{sequencer.EventClaimed, sequencer.EventCompleted}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
@@ -960,7 +1065,7 @@ func TestRunnerAcceptsExactObserverAndLeaseBoundaries(t *testing.T) {
 	t.Parallel()
 
 	spec := validSpec("runner.bounds")
-	spec.Policy.Timeout = time.Second - time.Nanosecond
+	spec.Policy.Timeout = time.Second - sequencer.DefaultHandlerStopWait - 100*time.Millisecond - time.Nanosecond
 	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -1269,6 +1374,14 @@ func TestRunnerConstructorValidation(t *testing.T) {
 	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", LeaseDuration: -time.Second}); !errors.Is(err, sequencer.ErrInvalidRunner) {
 		t.Fatalf("negative lease error = %v", err)
 	}
+	for _, stopWait := range []time.Duration{-time.Nanosecond, sequencer.MaxHandlerStopWait + time.Nanosecond} {
+		if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", HandlerStopWait: stopWait}); !errors.Is(err, sequencer.ErrInvalidRunner) {
+			t.Fatalf("handler stop wait %s error = %v", stopWait, err)
+		}
+	}
+	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", HandlerStopWait: sequencer.MaxHandlerStopWait}); err != nil {
+		t.Fatalf("exact handler stop wait limit error = %v", err)
+	}
 	if _, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: strings.Repeat("o", sequencer.DefaultMaxActorBytes+1)}); !errors.Is(err, sequencer.ErrInvalidRunner) {
 		t.Fatalf("owner overflow error = %v", err)
 	}
@@ -1382,8 +1495,8 @@ func TestRunnerFaultBoundariesAndAllowedFailure(t *testing.T) {
 func TestRunnerObserverApprovalConditionAndFailureClassifications(t *testing.T) {
 	t.Parallel()
 
-	events := 0
-	observer := sequencer.ObserverFunc(func(sequencer.Event) { events++ })
+	events := make(chan sequencer.Event, 3)
+	observer := sequencer.ObserverFunc(func(event sequencer.Event) { events <- event })
 	spec := validSpec("approved")
 	spec.Policy.RequiresApproval = true
 	plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
@@ -1391,8 +1504,15 @@ func TestRunnerObserverApprovalConditionAndFailureClassifications(t *testing.T) 
 		Owner: "owner", Approver: approverStub{approval: sequencer.Approval{Approved: true, Actor: "op", Reason: "ticket"}},
 		Observers: []sequencer.Observer{nil, observer},
 	})
-	if _, err := runner.Execute(context.Background()); err != nil || events != 3 {
-		t.Fatalf("Execute() error = %v, events = %d", err, events)
+	if _, err := runner.Execute(context.Background()); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for range 3 {
+		select {
+		case <-events:
+		case <-time.After(time.Second):
+			t.Fatal("approval observations missing")
+		}
 	}
 	if report, err := runner.Execute(context.Background()); err != nil || report.Operations[0].State != sequencer.Succeeded {
 		t.Fatalf("second Execute() = %+v, %v", report, err)

@@ -1,4 +1,4 @@
-module github.com/faustbrian/go-sequencer
+module github.com/faustbrian/go-sequencer/v2
 
 go 1.27.0
 

@@ -1,9 +1,9 @@
 # Quickstart
 
-Install the stable root module:
+After the stable v2.0.0 candidate is published, install it with:
 
 ```sh
-go get github.com/faustbrian/go-sequencer
+go get github.com/faustbrian/go-sequencer/v2@v2.0.0
 ```
 
 Save this complete program as `main.go`, then run it with `go run .`:
@@ -17,8 +17,8 @@ import (
 	"log"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 func main() {
@@ -34,7 +34,7 @@ func run() error {
 	operation := sequencer.OperationSpec{
 		ID:          "postal.normalize-postcodes",
 		Version:     1,
-		Checksum:    "sha256:reviewed-source-checksum",
+		Checksum:    "sha256:fa89cb52f3af6c2d4d9563469400709593cb45fc90d480ff34cacda5a76189aa",
 		Description: "Normalize stored postcode spelling",
 		Channel:     "deploy",
 		Policy: sequencer.Policy{

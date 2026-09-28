@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	sequencerretry "github.com/faustbrian/go-sequencer/adapters/retry"
-	"github.com/faustbrian/go-sequencer/goretry"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	sequencerretry "github.com/faustbrian/go-sequencer/v2/adapters/retry"
+	"github.com/faustbrian/go-sequencer/v2/goretry"
 )
 
 func TestFacadeDelegatesToCanonicalAdapter(t *testing.T) {

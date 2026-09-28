@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	sequencer "github.com/faustbrian/go-sequencer"
-	"github.com/faustbrian/go-sequencer/memory"
+	sequencer "github.com/faustbrian/go-sequencer/v2"
+	"github.com/faustbrian/go-sequencer/v2/memory"
 )
 
 func TestStoreValidationInspectionAndResetEdges(t *testing.T) {
@@ -19,7 +19,7 @@ func TestStoreValidationInspectionAndResetEdges(t *testing.T) {
 	if err := store.Register(ctx, []sequencer.Registration{{}}, now); !errors.Is(err, sequencer.ErrInvalidOperation) {
 		t.Fatalf("Register(invalid) error = %v", err)
 	}
-	registration := sequencer.Registration{ID: "a", Version: 1, Checksum: "sum"}
+	registration := sequencer.Registration{ID: "a", Version: 1, Checksum: testChecksum("sum")}
 	if err := store.Register(ctx, []sequencer.Registration{registration}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestStoreValidationInspectionAndResetEdges(t *testing.T) {
 		t.Fatalf("RecoverExpired(eligible) = %d, %v", recovered, err)
 	}
 	blocked := memory.New()
-	if err := blocked.Register(ctx, []sequencer.Registration{{ID: "dependent", Version: 1, Checksum: "sum", DependencyRefs: []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: "sum"}}}}, now); err != nil {
+	if err := blocked.Register(ctx, []sequencer.Registration{{ID: "dependent", Version: 1, Checksum: testChecksum("sum"), DependencyRefs: []sequencer.DependencyRef{{ID: "missing", Version: 1, Checksum: testChecksum("sum")}}}}, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := blocked.ClaimNext(ctx, sequencer.ClaimRequest{OperationIDs: []sequencer.OperationID{"dependent"}, Owner: "owner", Now: now, LeaseDuration: time.Minute}); !errors.Is(err, sequencer.ErrNoEligibleOperation) {
@@ -74,7 +74,7 @@ func TestStoreDeferredRetryResetAndDefensiveCopies(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	store := memory.New()
-	if err := store.Register(ctx, []sequencer.Registration{{ID: "a", Version: 1, Checksum: "sum"}}, now); err != nil {
+	if err := store.Register(ctx, []sequencer.Registration{{ID: "a", Version: 1, Checksum: testChecksum("sum")}}, now); err != nil {
 		t.Fatal(err)
 	}
 	claim, _ := store.ClaimNext(ctx, sequencer.ClaimRequest{OperationIDs: []sequencer.OperationID{"a"}, Owner: "owner", Now: now, LeaseDuration: time.Minute})
@@ -124,7 +124,7 @@ func TestStoreDeferredRetryResetAndDefensiveCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, _ := store.Snapshot(ctx, "a", 1)
-	record.DependencyRefs = append(record.DependencyRefs, sequencer.DependencyRef{ID: "mutated", Version: 1, Checksum: "sum"})
+	record.DependencyRefs = append(record.DependencyRefs, sequencer.DependencyRef{ID: "mutated", Version: 1, Checksum: testChecksum("sum")})
 	recordAgain, _ := store.Snapshot(ctx, "a", 1)
 	if len(recordAgain.DependencyRefs) != 0 || recordAgain.State != sequencer.Eligible {
 		t.Fatalf("record = %+v", recordAgain)

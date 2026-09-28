@@ -72,8 +72,10 @@ func TestNewOperationRequiresCryptographicSHA256Checksum(t *testing.T) {
 		t.Fatalf("NewOperation() valid SHA-256 error = %v", err)
 	}
 	for _, checksum := range []string{
+		"sha256:" + strings.Repeat("0", 62),
 		"sha256:" + strings.Repeat("0", 63),
 		"sha256:" + strings.Repeat("0", 65),
+		"sha256:" + strings.Repeat("0", 66),
 		"otherxx:" + strings.Repeat("0", 64),
 		"sha256:" + strings.Repeat("G", 64),
 	} {

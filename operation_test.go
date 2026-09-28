@@ -57,6 +57,9 @@ func TestNewOperationValidatesAndFreezesMetadata(t *testing.T) {
 
 func TestNewOperationRequiresCryptographicSHA256Checksum(t *testing.T) {
 	t.Parallel()
+	if got := len(sequencer.ChecksumBytes([]byte("reviewed operation"))); got != sequencer.DefaultMaxChecksumBytes {
+		t.Fatalf("encoded checksum length = %d, want public checksum bound %d", got, sequencer.DefaultMaxChecksumBytes)
+	}
 
 	spec := validSpec("checksum-contract")
 	spec.Checksum = "sha256:not-a-digest"
@@ -67,6 +70,38 @@ func TestNewOperationRequiresCryptographicSHA256Checksum(t *testing.T) {
 	spec.Checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	if _, err := sequencer.NewOperation(spec); err != nil {
 		t.Fatalf("NewOperation() valid SHA-256 error = %v", err)
+	}
+	for _, checksum := range []string{
+		"sha256:" + strings.Repeat("0", 63),
+		"sha256:" + strings.Repeat("0", 65),
+		"otherxx:" + strings.Repeat("0", 64),
+		"sha256:" + strings.Repeat("G", 64),
+	} {
+		if sequencer.ValidChecksum(checksum) {
+			t.Errorf("ValidChecksum(%q) accepted noncanonical identity", checksum)
+		}
+	}
+}
+
+func TestNewOperationRejectsEachUnpinnedDependencyIdentity(t *testing.T) {
+	t.Parallel()
+	base := validSpec("dependency-owner")
+	for _, candidate := range []struct {
+		name string
+		ref  sequencer.DependencyRef
+	}{
+		{"self", sequencer.DependencyRef{ID: base.ID, Version: 1, Checksum: checksumFor("self")}},
+		{"invalid ID", sequencer.DependencyRef{ID: "Invalid", Version: 1, Checksum: checksumFor("invalid")}},
+		{"missing version", sequencer.DependencyRef{ID: "dependency", Checksum: checksumFor("version")}},
+		{"invalid checksum", sequencer.DependencyRef{ID: "dependency", Version: 1, Checksum: "sha256:invalid"}},
+	} {
+		t.Run(candidate.name, func(t *testing.T) {
+			spec := base
+			spec.DependencyRefs = []sequencer.DependencyRef{candidate.ref}
+			if _, err := sequencer.NewOperation(spec); !errors.Is(err, sequencer.ErrInvalidOperation) {
+				t.Fatalf("NewOperation() error = %v, want ErrInvalidOperation", err)
+			}
+		})
 	}
 }
 

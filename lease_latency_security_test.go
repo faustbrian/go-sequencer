@@ -22,6 +22,117 @@ type nonrenewableSecurityStore struct{ sequencer.Store }
 
 type interveningRenewalStore struct{ *memory.Store }
 
+type markAndRenewalFailureStore struct {
+	*memory.Store
+	markErr  error
+	renewals atomic.Int32
+}
+
+type completionAndRenewalFailureStore struct {
+	*memory.Store
+	completeErr error
+	renewals    atomic.Int32
+}
+
+func (store *completionAndRenewalFailureStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if store.renewals.Add(1) == 1 {
+		return store.Store.RenewLease(ctx, ownership, now, duration)
+	}
+	return time.Time{}, sequencer.ErrStaleOwner
+}
+
+func (store *completionAndRenewalFailureStore) Complete(ctx context.Context, _ sequencer.Completion) error {
+	<-ctx.Done()
+	return store.completeErr
+}
+
+func (store *markAndRenewalFailureStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	if store.renewals.Add(1) == 1 {
+		return store.Store.RenewLease(ctx, ownership, now, duration)
+	}
+	return time.Time{}, sequencer.ErrStaleOwner
+}
+
+func (store *markAndRenewalFailureStore) MarkRunning(ctx context.Context, _ sequencer.Ownership, _ time.Time) (sequencer.AttemptRecord, error) {
+	<-ctx.Done()
+	return sequencer.AttemptRecord{}, store.markErr
+}
+
+func TestRunnerRetainsStoreAndLeaseFailureDuringMarkRunning(t *testing.T) {
+	spec := validSpec("mark-and-renewal-failure")
+	spec.Policy.Timeout = 10 * time.Millisecond
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeFailure := errors.New("mark transition unavailable")
+	store := &markAndRenewalFailureStore{Store: memory.New(), markErr: storeFailure}
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", LeaseDuration: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = runner.Execute(ctx)
+	if !errors.Is(err, storeFailure) || !errors.Is(err, sequencer.ErrStaleOwner) {
+		t.Fatalf("Execute() error = %v, want both store and fenced lease failures", err)
+	}
+}
+
+func TestRunnerRetainsStoreAndLeaseFailureDuringBudgetSettlement(t *testing.T) {
+	previous := time.Date(2026, 8, 11, 13, 0, 0, 0, time.UTC)
+	spec := validSpec("budget-settlement-and-renewal-failure")
+	spec.Policy.Timeout = 10 * time.Millisecond
+	spec.Policy.MaxAttempts = 1
+	spec.Policy.UnknownOutcome = sequencer.UnknownOutcomeReplayIdempotent
+	var handlerCalled atomic.Bool
+	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+		handlerCalled.Store(true)
+		return sequencer.Output{}, nil
+	})
+	inner := memory.New()
+	if err := inner.Register(context.Background(), []sequencer.Registration{{
+		ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel,
+		UnknownOutcome: sequencer.UnknownOutcomeReplayIdempotent,
+	}}, previous); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := inner.ClaimNext(context.Background(), sequencer.ClaimRequest{
+		Candidates: []sequencer.ClaimCandidate{{ID: spec.ID, Version: spec.Version, Checksum: spec.Checksum, Channel: spec.Channel}},
+		Owner:      "lost", Now: previous, LeaseDuration: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inner.MarkRunning(context.Background(), claim.Ownership(), previous); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := inner.RecoverExpired(context.Background(), previous.Add(2*time.Second)); err != nil || recovered != 1 {
+		t.Fatalf("RecoverExpired() = %d, %v", recovered, err)
+	}
+	plan, err := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeFailure := errors.New("budget settlement unavailable")
+	store := &completionAndRenewalFailureStore{Store: inner, completeErr: storeFailure}
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{
+		Owner: "replacement", Clock: newManualClock(previous.Add(2 * time.Second)), LeaseDuration: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = runner.Execute(ctx)
+	if !errors.Is(err, storeFailure) || !errors.Is(err, sequencer.ErrStaleOwner) {
+		t.Fatalf("Execute() error = %v, want both store and fenced lease failures", err)
+	}
+	if handlerCalled.Load() {
+		t.Fatal("exhausted durable budget admitted the handler")
+	}
+}
+
 func (store *interveningRenewalStore) Complete(ctx context.Context, completion sequencer.Completion) error {
 	// Force the renewal to acquire persistence authority after the caller's
 	// sample but before Complete acquires the store lock, without a sleep.

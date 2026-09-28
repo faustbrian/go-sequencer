@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -82,5 +83,57 @@ func TestNextAttemptSaturatesAtPlatformMaximum(t *testing.T) {
 	}
 	if got := nextAttempt(maximum - 1); got != maximum {
 		t.Fatalf("nextAttempt(maximum-1) = %d, want %d", got, maximum)
+	}
+}
+
+func TestObserverDropsEventsBeyondItsPendingCapacity(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	delivered := make(chan Event, 18)
+	var once sync.Once
+	observer := &boundedObserver{observer: ObserverFunc(func(event Event) {
+		once.Do(func() { close(started) })
+		<-release
+		delivered <- event
+	})}
+	observer.notify(Event{Attempt: 1})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("observer did not start")
+	}
+	for attempt := uint(2); attempt <= 18; attempt++ {
+		observer.notify(Event{Attempt: attempt})
+	}
+	close(release)
+	deadline := time.After(time.Second)
+	for {
+		observer.mu.Lock()
+		running := observer.running
+		observer.mu.Unlock()
+		if !running {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("observer did not drain its bounded queue")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if got := len(delivered); got != 17 {
+		t.Fatalf("delivered %d events, want one active plus 16 pending", got)
+	}
+	for attempt := uint(1); attempt <= 17; attempt++ {
+		if got := (<-delivered).Attempt; got != attempt {
+			t.Fatalf("delivered attempt %d, want %d", got, attempt)
+		}
 	}
 }

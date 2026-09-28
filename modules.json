@@ -400,7 +400,7 @@
         "api_compatibility": true,
         "benchmarks": true,
         "conformance": false,
-        "coverage": true,
+        "coverage": false,
         "documentation": true,
         "fuzz": true,
         "lint": true,

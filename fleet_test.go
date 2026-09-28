@@ -2009,7 +2009,7 @@ type onceSignals struct {
 
 type failingRenewStore struct {
 	*memory.Store
-	err error
+	err       error
 	failAfter <-chan struct{}
 }
 

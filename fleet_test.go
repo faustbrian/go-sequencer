@@ -234,7 +234,7 @@ func TestFleetFailsReadinessWhenUncooperativeHandlerOutlivesLease(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &failingRenewStore{Store: memory.New(), err: sequencer.ErrStaleOwner}
+	store := &failingRenewStore{Store: memory.New(), err: sequencer.ErrStaleOwner, failAfter: started}
 	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
 		RunnerOptions: sequencer.RunnerOptions{Owner: "pod-stale-uncooperative"},
 		ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
@@ -2010,6 +2010,7 @@ type onceSignals struct {
 type failingRenewStore struct {
 	*memory.Store
 	err error
+	failAfter <-chan struct{}
 }
 
 type leaseFailureAdmissionStore struct {
@@ -2256,6 +2257,13 @@ func (store *completionFailureStore) Complete(context.Context, sequencer.Complet
 func (store *failingRenewStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
 	if until, claimed, err := renewClaimedFixture(ctx, store.Store, ownership, now, duration); claimed || err != nil {
 		return until, err
+	}
+	if store.failAfter != nil {
+		select {
+		case <-store.failAfter:
+		case <-ctx.Done():
+			return time.Time{}, ctx.Err()
+		}
 	}
 	return time.Time{}, store.err
 }

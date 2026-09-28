@@ -4,11 +4,14 @@
 
 | Version | Supported |
 | --- | --- |
+| 2.0.x | After `v2.0.0` is published |
 | 1.1.x | Yes |
 | Earlier releases | No |
 
-Security fixes are released from the latest supported minor line. Consumers
-should upgrade to its newest patch before reporting a vulnerability.
+An unpublished v2 candidate is not a supported release. Once published,
+security fixes target the newest patch of each supported line. Version 1.1.x
+remains supported for existing consumers; ending that support requires a
+separate published decision after reviewing their migration horizon.
 
 ## Reporting
 

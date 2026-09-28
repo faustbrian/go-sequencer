@@ -98,7 +98,7 @@ time and passes a root `ReconcileRequest` to the controller. Operation path
 resources must satisfy the lowercase 255-byte identifier grammar before
 authorization is invoked.
 
-`sequencehttp.Controller.Inspect` returns a pre-encoded JSON `Inspection`.
-The handler rejects empty, invalid, or larger-than-`MaxResponseBytes` results
-before writing a response; controllers retain the bytes and must not mutate
+`sequencehttp.Controller.Inspect` returns a pre-encoded UTF-8 JSON `Inspection`.
+The handler rejects empty, oversized, non-UTF-8, or invalid JSON results before
+writing a response; controllers retain the bytes and must not mutate
 them until request handling returns.

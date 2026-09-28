@@ -9,8 +9,10 @@
   released API and behavior.
 - Raise the minimum supported and tested Go toolchain to 1.27.0.
 - Require canonical lowercase `sha256:` definition checksums at plan, store,
-  and queue boundaries. Existing callers must replace legacy opaque checksum
-  strings with `ChecksumBytes` output before upgrading.
+  and queue boundaries. Convert legacy opaque checksums with `ChecksumBytes` on
+  a new operation version, not an existing ledger identity; drain or reconcile
+  old queued commands with compatible workers and retain old definitions for
+  rollback until their claim window closes.
 - Fail a fleet closed when an in-process handler remains active beyond its
   operation deadline, preserving the unknown outcome without admitting
   replacement work into the retained execution slot.

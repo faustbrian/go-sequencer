@@ -1,9 +1,10 @@
 package owneridentity_test
 
 import (
+	"testing"
+
 	sequencer "github.com/faustbrian/go-sequencer/v2"
 	"github.com/faustbrian/go-sequencer/v2/internal/owneridentity"
-	"testing"
 )
 
 func TestIdentityIsPreservedOrRejected(t *testing.T) {

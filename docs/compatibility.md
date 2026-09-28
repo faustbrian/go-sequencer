@@ -16,17 +16,24 @@ custom wrappers must delegate fenced renewal so leases remain valid through
 pre-handler work, callback cancellation acknowledgement, and settlement.
 This behavioral requirement is enforced despite the unchanged `Store` parameter.
 Legacy opaque checksum strings are rejected consistently by
-plans, direct stores, and queue adapters; deployments must update registered
-definitions and queued commands together before upgrading.
+plans, direct stores, and queue adapters. A persisted `(operation ID, version)`
+cannot be converted in place: registering a new checksum for it fails with
+`ErrChecksumDrift`. Introduce a new operation version with a canonical checksum
+and route new commands to that version. Keep old definitions in the old binary
+and ledger while compatible workers drain or reconcile outstanding legacy queue
+messages; do not rewrite their version or checksum. Retain the old binary and
+queue route for any rollback window that still requires old-version claims.
 
 ## Migrating from v1
 
 After v2 publication, change the module and every package import from
 `github.com/faustbrian/go-sequencer` to
-`github.com/faustbrian/go-sequencer/v2`. Update definitions and queued commands
-to use `ChecksumBytes` output before allowing v2 workers to claim them. Review
-the new handler cancellation acknowledgement and best-effort observer delivery
-contracts before rollout.
+`github.com/faustbrian/go-sequencer/v2`. Give converted definitions a new
+version and `ChecksumBytes` checksum, and dispatch new commands with that exact
+version and checksum. Drain or reconcile legacy queued commands with compatible
+old workers before retiring their route; v2 workers cannot claim legacy opaque
+checksums. Review the new handler cancellation acknowledgement and best-effort
+observer delivery contracts before rollout.
 
 The local Golib ecosystem has no owned runtime consumer of sequencer. The
 released `go-library-tools/release/compatibility-consumer` fixture is the only

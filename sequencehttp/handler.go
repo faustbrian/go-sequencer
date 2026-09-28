@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/faustbrian/go-sequencer/v2"
 )
@@ -50,8 +51,8 @@ type ResetRequest struct {
 type Inspection []byte
 
 // Controller owns inspection and execution semantics. Inspect must return
-// pre-encoded JSON so the handler can reject oversized results before parsing
-// or copying them.
+// pre-encoded UTF-8 JSON so the handler can reject oversized results before
+// parsing or copying them.
 type Controller interface {
 	Inspect(context.Context, string, uint) (Inspection, error)
 	Execute(context.Context) error
@@ -131,11 +132,13 @@ func (handler *Handler) inspect(response http.ResponseWriter, request *http.Requ
 		writeError(response, http.StatusNotFound)
 		return
 	}
-	if len(result) == 0 || len(result) > MaxResponseBytes || !json.Valid(result) {
+	if len(result) == 0 || len(result) > MaxResponseBytes || !utf8.Valid(result) || !json.Valid(result) {
 		writeError(response, http.StatusInternalServerError)
 		return
 	}
 	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	// #nosec G705 -- UTF-8 JSON is validated and bounded above; nosniff prevents HTML interpretation while preserving controller-owned bytes.
 	_, _ = response.Write(result)
 }
 

@@ -17,6 +17,7 @@ func TestInspectionPreservesExactPreencodedBoundary(t *testing.T) {
 	}{
 		{name: "exact boundary", json: `"` + strings.Repeat("x", sequencehttp.MaxResponseBytes-2) + `"`, status: http.StatusOK},
 		{name: "HTML characters", json: `"<>&"`, status: http.StatusOK},
+		{name: "invalid UTF-8", json: string([]byte{'"', 0xff, '"'}), status: http.StatusInternalServerError},
 		{name: "oversize", json: `"` + strings.Repeat("x", sequencehttp.MaxResponseBytes-1) + `"`, status: http.StatusInternalServerError},
 		{name: "invalid JSON", json: `{"unclosed":`, status: http.StatusInternalServerError},
 		{name: "empty", status: http.StatusInternalServerError},
@@ -33,6 +34,9 @@ func TestInspectionPreservesExactPreencodedBoundary(t *testing.T) {
 			}
 			if test.status == http.StatusOK && response.Body.String() != test.json {
 				t.Fatal("inspection changed the validated bytes")
+			}
+			if test.status == http.StatusOK && (response.Header().Get("Content-Type") != "application/json" || response.Header().Get("X-Content-Type-Options") != "nosniff") {
+				t.Fatal("inspection response permits MIME sniffing or has the wrong media type")
 			}
 			if test.status == http.StatusInternalServerError && response.Body.String() != `{"error":"request failed"}` {
 				t.Fatal("inspection error was not generic")

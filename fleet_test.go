@@ -2071,7 +2071,7 @@ func (store *blockingMarkRunningStore) MarkRunning(ctx context.Context, _ sequen
 
 func (store *blockingRenewStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
 	if store.allowClaimed {
-		if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+		if until, claimed, err := renewClaimedFixture(ctx, store.Store, ownership, now, duration); claimed || err != nil {
 			return until, err
 		}
 	}
@@ -2159,7 +2159,7 @@ func (store *renewResultStore) MarkRunning(ctx context.Context, ownership sequen
 }
 
 func (store *renewResultStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
-	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+	if until, claimed, err := renewClaimedFixture(ctx, store.Store, ownership, now, duration); claimed || err != nil {
 		return until, err
 	}
 	return store.until, nil
@@ -2245,7 +2245,7 @@ func (store *completionFailureStore) Complete(context.Context, sequencer.Complet
 }
 
 func (store *failingRenewStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
-	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+	if until, claimed, err := renewClaimedFixture(ctx, store.Store, ownership, now, duration); claimed || err != nil {
 		return until, err
 	}
 	return time.Time{}, store.err
@@ -2268,7 +2268,7 @@ func (store *leaseFailureAdmissionStore) ClaimNext(ctx context.Context, request 
 }
 
 func (store *leaseFailureAdmissionStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
-	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+	if until, claimed, err := renewClaimedFixture(ctx, store.Store, ownership, now, duration); claimed || err != nil {
 		return until, err
 	}
 	select {
@@ -2303,7 +2303,7 @@ func (store *leaseFailureRecoveryStore) RecoverExpired(ctx context.Context, now 
 }
 
 func (store *leaseFailureRecoveryStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
-	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+	if until, claimed, err := renewClaimedFixture(ctx, store.Store, ownership, now, duration); claimed || err != nil {
 		return until, err
 	}
 	// Fail a running handler during blocked recovery, not the initial lease
@@ -2322,7 +2322,7 @@ func (store *leaseFailureRecoveryStore) RenewLease(ctx context.Context, ownershi
 }
 
 func (store *cancelingRenewStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
-	if until, claimed, err := renewClaimedFixture(store.Store, ctx, ownership, now, duration); claimed || err != nil {
+	if until, claimed, err := renewClaimedFixture(ctx, store.Store, ownership, now, duration); claimed || err != nil {
 		return until, err
 	}
 	store.once.Do(func() { close(store.entered) })
@@ -2332,7 +2332,7 @@ func (store *cancelingRenewStore) RenewLease(ctx context.Context, ownership sequ
 
 // Running-lease failure fixtures permit the newly required initial ownership
 // proof. Their injected failures still occur against actual Running records.
-func renewClaimedFixture(store *memory.Store, ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, bool, error) {
+func renewClaimedFixture(ctx context.Context, store *memory.Store, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, bool, error) {
 	record, err := store.Snapshot(ctx, ownership.OperationID, ownership.Version)
 	if err != nil {
 		return time.Time{}, false, err

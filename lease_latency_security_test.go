@@ -25,11 +25,11 @@ type interveningRenewalStore struct{ *memory.Store }
 func (store *interveningRenewalStore) Complete(ctx context.Context, completion sequencer.Completion) error {
 	// Force the renewal to acquire persistence authority after the caller's
 	// sample but before Complete acquires the store lock, without a sleep.
-	record, err := store.Store.Snapshot(ctx, completion.OperationID, completion.Version)
+	record, err := store.Snapshot(ctx, completion.OperationID, completion.Version)
 	if err != nil {
 		return err
 	}
-	if _, err := store.Store.RenewLease(ctx, completion.Ownership, completion.At.Add(time.Nanosecond), record.LeaseExpiresAt.Sub(completion.At)+time.Minute); err != nil {
+	if _, err := store.RenewLease(ctx, completion.Ownership, completion.At.Add(time.Nanosecond), record.LeaseExpiresAt.Sub(completion.At)+time.Minute); err != nil {
 		return err
 	}
 	return store.Store.Complete(ctx, completion)
@@ -287,7 +287,7 @@ func (store *delayedLeaseStore) ClaimNext(ctx context.Context, request sequencer
 	return claim, nil
 }
 
-func (store *delayedLeaseStore) MarkRunning(ctx context.Context, ownership sequencer.Ownership, now time.Time) (sequencer.AttemptRecord, error) {
+func (store *delayedLeaseStore) MarkRunning(ctx context.Context, ownership sequencer.Ownership, _ time.Time) (sequencer.AttemptRecord, error) {
 	select {
 	case <-time.After(store.markDelay):
 	case <-ctx.Done():
@@ -320,11 +320,12 @@ func TestStandaloneLeaseCoversPreHandlerAndSettlementLatency(t *testing.T) {
 			})
 			plan, _ := sequencer.CompilePlan([]sequencer.OperationSpec{spec}, sequencer.PlanOptions{})
 			store := &delayedLeaseStore{Store: memory.New()}
-			if phase == "claim-return" {
+			switch phase {
+			case "claim-return":
 				store.claimDelay = 120 * time.Millisecond
-			} else if phase == "mark-running" {
+			case "mark-running":
 				store.markDelay = 120 * time.Millisecond
-			} else {
+			case "completion":
 				store.completeDelay = 120 * time.Millisecond
 			}
 			runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", HandlerStopWait: 60 * time.Millisecond, LeaseDuration: 170*time.Millisecond + time.Nanosecond})

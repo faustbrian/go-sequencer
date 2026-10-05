@@ -14,6 +14,7 @@ import (
 	sequencer "github.com/faustbrian/go-sequencer/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func internalTestChecksum(value string) string { return sequencer.ChecksumBytes([]byte(value)) }
@@ -1103,6 +1104,7 @@ func (rows *fakeRows) Scan(destinations ...any) error {
 func (rows *fakeRows) Values() ([]any, error) { return rows.values[rows.index-1], nil }
 func (rows *fakeRows) RawValues() [][]byte    { return nil }
 func (rows *fakeRows) Conn() *pgx.Conn        { return nil }
+func (rows *fakeRows) TypeMap() *pgtype.Map   { return nil }
 
 type fakeTx struct {
 	rows                []pgx.Row

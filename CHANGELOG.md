@@ -2,17 +2,21 @@
 
 ## Unreleased
 
+## 2.0.0 - 2026-09-28
+
 ### Changed
 
 - Publish these intentional stable-contract changes from the stable
   `github.com/faustbrian/go-sequencer/v2` module path. Version 1 remains on its
   released API and behavior.
-- Raise the minimum supported and tested Go toolchain to 1.27.0.
+- Raise the minimum supported and tested Go toolchain to 1.27.0
+  ([70b160618d](https://github.com/faustbrian/go-sequencer/commit/70b160618de2bdad0ff51b3b0eea17db982cd524)).
 - Require canonical lowercase `sha256:` definition checksums at plan, store,
   and queue boundaries. Convert legacy opaque checksums with `ChecksumBytes` on
   a new operation version, not an existing ledger identity; drain or reconcile
   old queued commands with compatible workers and retain old definitions for
-  rollback until their claim window closes.
+  rollback until their claim window closes
+  ([bd525432c8](https://github.com/faustbrian/go-sequencer/commit/bd525432c855d3d8b3892ae9cdcb663e9e3ad379)).
 - Fail a fleet closed when an in-process handler remains active beyond its
   operation deadline, preserving the unknown outcome without admitting
   replacement work into the retained execution slot.
@@ -28,6 +32,26 @@
   bounded administrative inspection responses before committing HTTP headers.
 - Adopt checksum-pinned go-library-tools v1.7.2 with the default secret-scanning
   rules and no repository-local allowlists.
+
+### Maintenance
+
+- Strengthen lease and durable-transition regression evidence
+  ([113193eb4d](https://github.com/faustbrian/go-sequencer/commit/113193eb4d1c96e739e1866ef53f8bdc098d3c35),
+  [3105e78692](https://github.com/faustbrian/go-sequencer/commit/3105e7869210717acddb094782297cce6c88d781)).
+- Add exact PostgreSQL registration-limit regression coverage
+  ([e6f98c01ad](https://github.com/faustbrian/go-sequencer/commit/e6f98c01addf289feb805d00ca16879064e3fa49)).
+- Select risk-based release checks in the module manifest
+  ([b58af2f14f](https://github.com/faustbrian/go-sequencer/commit/b58af2f14fdc0b082620dd768e9e0f332ec4dfee)).
+
+## 1.1.1 - 2026-09-13
+
+### Changed
+
+- Refresh Docker API and Testcontainers dependencies, including the PostgreSQL
+  adapter test dependency
+  ([24b958d67a](https://github.com/faustbrian/go-sequencer/commit/24b958d67a69ffc8503dee893b001c62ee5f2aac),
+  [9b4882d0d6](https://github.com/faustbrian/go-sequencer/commit/9b4882d0d6d977de551c2ad6990edb122244e7b2),
+  [38f3625a75](https://github.com/faustbrian/go-sequencer/commit/38f3625a759c5dde912ca773295f71fe3535d38c)).
 
 ## 1.1.0 - 2026-09-09
 

@@ -93,7 +93,7 @@ func TestFleetStopsAcceptingBeforeCancelingOwnedAttempts(t *testing.T) {
 	}
 }
 
-func TestFleetRenewsAcceptedAttemptsAndStopsRenewalBeforeCompletion(t *testing.T) {
+func TestFleetRenewsAcceptedAttemptsWithoutRenewingCompletedLease(t *testing.T) {
 	t.Parallel()
 
 	release := make(chan struct{})
@@ -110,10 +110,14 @@ func TestFleetRenewsAcceptedAttemptsAndStopsRenewalBeforeCompletion(t *testing.T
 	var observedMu sync.Mutex
 	var observed []sequencer.EventType
 	heartbeatAttempts := make(chan uint, 1)
+	completedObserved := make(chan struct{})
 	observer := sequencer.ObserverFunc(func(event sequencer.Event) {
 		observedMu.Lock()
 		observed = append(observed, event.Type)
 		observedMu.Unlock()
+		if event.Type == sequencer.EventCompleted {
+			close(completedObserved)
+		}
 		if event.Type == sequencer.EventHeartbeat {
 			select {
 			case heartbeatAttempts <- event.Attempt:
@@ -148,13 +152,17 @@ func TestFleetRenewsAcceptedAttemptsAndStopsRenewalBeforeCompletion(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("accepted attempt did not complete")
 	}
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-completedObserved:
+	case <-time.After(time.Second):
+		t.Fatal("completed attempt was not observed")
+	}
 	cancel()
 	if err := awaitFleetResult(t, done); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if got := store.eventsSnapshot(); got[len(got)-1] != "complete" {
-		t.Fatalf("lease events = %v; renewal continued after completion", got)
+		t.Fatalf("lease events = %v; successful renewal followed durable completion", got)
 	}
 	observedMu.Lock()
 	defer observedMu.Unlock()
@@ -226,7 +234,7 @@ func TestFleetFailsReadinessWhenUncooperativeHandlerOutlivesLease(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &failingRenewStore{Store: memory.New(), err: sequencer.ErrStaleOwner}
+	store := &failingRenewStore{Store: memory.New(), err: sequencer.ErrStaleOwner, failAfter: started}
 	fleet, err := sequencer.NewFleet(plan, store, sequencer.FleetOptions{
 		RunnerOptions: sequencer.RunnerOptions{Owner: "pod-stale-uncooperative"},
 		ClaimInterval: time.Millisecond, RenewInterval: time.Millisecond,
@@ -1988,10 +1996,11 @@ func startFleet(parent context.Context, t *testing.T, fleet *sequencer.Fleet) <-
 
 type leaseTrackingStore struct {
 	*memory.Store
-	mu        sync.Mutex
-	events    []string
-	completed chan struct{}
-	signals   onceSignals
+	mu           sync.Mutex
+	events       []string
+	renewalCalls int
+	completed    chan struct{}
+	signals      onceSignals
 }
 
 type onceSignals struct {
@@ -2000,7 +2009,8 @@ type onceSignals struct {
 
 type failingRenewStore struct {
 	*memory.Store
-	err error
+	err       error
+	failAfter <-chan struct{}
 }
 
 type leaseFailureAdmissionStore struct {
@@ -2248,6 +2258,13 @@ func (store *failingRenewStore) RenewLease(ctx context.Context, ownership sequen
 	if until, claimed, err := renewClaimedFixture(ctx, store.Store, ownership, now, duration); claimed || err != nil {
 		return until, err
 	}
+	if store.failAfter != nil {
+		select {
+		case <-store.failAfter:
+		case <-ctx.Done():
+			return time.Time{}, ctx.Err()
+		}
+	}
 	return time.Time{}, store.err
 }
 
@@ -2352,17 +2369,28 @@ func newLeaseTrackingStore() *leaseTrackingStore {
 
 func (store *leaseTrackingStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
 	store.mu.Lock()
-	store.events = append(store.events, "renew")
-	store.mu.Unlock()
-	return store.Store.RenewLease(ctx, ownership, now, duration)
+	defer store.mu.Unlock()
+	store.renewalCalls++
+	until, err := store.Store.RenewLease(ctx, ownership, now, duration)
+	if err == nil {
+		store.events = append(store.events, "renew")
+	}
+	return until, err
 }
 
 func (store *leaseTrackingStore) Complete(ctx context.Context, completion sequencer.Completion) error {
+	// Serialize the bounded memory calls with their event records so the log
+	// follows durable store order, not wrapper entry order.
 	store.mu.Lock()
-	store.events = append(store.events, "complete")
+	err := store.Store.Complete(ctx, completion)
+	if err == nil {
+		store.events = append(store.events, "complete")
+	}
 	store.mu.Unlock()
-	store.signals.completed.Do(func() { close(store.completed) })
-	return store.Store.Complete(ctx, completion)
+	if err == nil {
+		store.signals.completed.Do(func() { close(store.completed) })
+	}
+	return err
 }
 
 func (store *leaseTrackingStore) eventsSnapshot() []string {
@@ -2374,11 +2402,5 @@ func (store *leaseTrackingStore) eventsSnapshot() []string {
 func (store *leaseTrackingStore) renewalCount() int {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	count := 0
-	for _, event := range store.events {
-		if event == "renew" {
-			count++
-		}
-	}
-	return count
+	return store.renewalCalls
 }

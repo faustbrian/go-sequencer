@@ -303,9 +303,8 @@ func SanitizePersistenceText(value string, maximum int) string {
 	if maximum == 0 {
 		return ""
 	}
-	if maximum < len(value) {
-		value = value[:maximum+min(len(value)-maximum, persistenceSanitizerLookaheadBytes)]
-	}
+	limit := min(len(value), maximum)
+	value = value[:limit+min(len(value)-limit, persistenceSanitizerLookaheadBytes)]
 	value = bearerCredentialPattern.ReplaceAllString(value, "Bearer [REDACTED]")
 	value = namedCredentialPattern.ReplaceAllString(value, "$1=[REDACTED]")
 	value = strings.Map(func(character rune) rune {

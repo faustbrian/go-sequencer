@@ -521,7 +521,7 @@ func (store *Store) Complete(ctx context.Context, completion sequencer.Completio
 		return err
 	}
 	output, err := json.Marshal(preparedOutput)
-	if err != nil || len(output) > sequencer.DefaultMaxOutputBytes {
+	if err != nil {
 		return sequencer.ErrResourceLimit
 	}
 	tx, err := store.database.Begin(ctx)

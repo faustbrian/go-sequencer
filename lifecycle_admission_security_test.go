@@ -129,12 +129,45 @@ func TestBlockingObserversDoNotDelayRunnerOrFleetStart(t *testing.T) {
 	}
 }
 
+type acknowledgedSettlementStore struct {
+	*memory.Store
+	clock      *manualClock
+	renewed    chan time.Time
+	completing chan struct{}
+	settle     <-chan struct{}
+}
+
+func (store *acknowledgedSettlementStore) RenewLease(ctx context.Context, ownership sequencer.Ownership, now time.Time, duration time.Duration) (time.Time, error) {
+	until, err := store.Store.RenewLease(ctx, ownership, now, duration)
+	if err == nil {
+		select {
+		case store.renewed <- now:
+		default:
+		}
+	}
+	return until, err
+}
+
+func (store *acknowledgedSettlementStore) Complete(ctx context.Context, completion sequencer.Completion) error {
+	close(store.completing)
+	select {
+	case <-store.settle:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	completion.At = store.clock.Now()
+	return store.Store.Complete(ctx, completion)
+}
+
 func TestUncooperativeAttemptSettlesWithinAcceptedLease(t *testing.T) {
 	spec := validSpec("lease.unknown-settlement")
 	spec.Policy.Timeout = 10 * time.Millisecond
-	release := make(chan struct{})
-	defer close(release)
-	spec.Handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
+	release, settle := make(chan struct{}), make(chan struct{})
+	started := make(chan context.Context, 1)
+	handlerStopped := make(chan struct{})
+	spec.Handler = sequencer.HandlerFunc(func(ctx context.Context, _ sequencer.Attempt) (sequencer.Output, error) {
+		defer close(handlerStopped)
+		started <- ctx
 		<-release
 		return sequencer.Output{}, nil
 	})
@@ -142,22 +175,88 @@ func TestUncooperativeAttemptSettlesWithinAcceptedLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := memory.New()
-	options := sequencer.RunnerOptions{Owner: "owner", LeaseDuration: spec.Policy.Timeout + time.Nanosecond, HandlerStopWait: 60 * time.Millisecond}
-	runner, err := sequencer.NewRunner(plan, store, options)
-	// A constructor may reject an unsafe lease budget instead of renewing it.
-	// In that case exercise the same callback against an accepted lease.
-	if err != nil {
-		options.LeaseDuration = spec.Policy.Timeout + options.HandlerStopWait + 100*time.Millisecond + time.Nanosecond
-		runner, err = sequencer.NewRunner(plan, store, options)
-	}
+	initial := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
+	clock := newManualClock(initial)
+	store := &acknowledgedSettlementStore{Store: memory.New(), clock: clock, renewed: make(chan time.Time, 8), completing: make(chan struct{}), settle: settle}
+	const lease = 100 * time.Millisecond
+	runner, err := sequencer.NewRunner(plan, store, sequencer.RunnerOptions{Owner: "owner", Clock: clock, LeaseDuration: lease, HandlerStopWait: 60 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = runner.Execute(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	result := make(chan error, 1)
+	go func() { defer close(finished); _, executeErr := runner.Execute(ctx); result <- executeErr }()
+	var releaseOnce, settleOnce sync.Once
+	t.Cleanup(func() {
+		cancel()
+		releaseOnce.Do(func() { close(release) })
+		settleOnce.Do(func() { close(settle) })
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Error("runner did not stop")
+		}
+	})
+	wait := func(signal <-chan struct{}, phase string) {
+		t.Helper()
+		select {
+		case <-signal:
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not acknowledge", phase)
+		}
+	}
+	var callbackCtx context.Context
+	select {
+	case callbackCtx = <-started:
+	case <-time.After(time.Second):
+		t.Fatal("callback did not start")
+	}
+	wait(callbackCtx.Done(), "callback timeout")
+	advanceAndRenew := func(at time.Time) {
+		t.Helper()
+		clock.mu.Lock()
+		clock.now = at
+		clock.mu.Unlock()
+		watchdog := time.NewTimer(time.Second)
+		defer watchdog.Stop()
+		for {
+			select {
+			case renewedAt := <-store.renewed:
+				if !renewedAt.Before(at) {
+					return
+				}
+			case <-watchdog.C:
+				t.Fatalf("no acknowledged renewal at %s", at)
+			}
+		}
+	}
+	// Advance only inside the current fenced interval, then acknowledge the
+	// real store extension. A frozen clock alone would hide a stopped keeper.
+	advanceAndRenew(initial.Add(lease / 2))
+	wait(store.completing, "unknown settlement")
+	// Cross the ORIGINAL expiry while completion is blocked. The keeper must
+	// still renew during settlement, rather than stop with the callback budget.
+	advanceAndRenew(initial.Add(lease + lease/5))
+	settleOnce.Do(func() { close(settle) })
+	wait(finished, "settlement")
+	err = <-result
 	record, snapshotErr := store.Snapshot(context.Background(), spec.ID, spec.Version)
-	if !errors.Is(err, sequencer.ErrUnknownResult) || errors.Is(err, sequencer.ErrStaleOwner) || snapshotErr != nil || record.State != sequencer.Indeterminate {
-		t.Fatalf("accepted lease lost settlement: error=%v state=%v snapshot error=%v", err, record.State, snapshotErr)
+	history, historyErr := store.History(context.Background(), spec.ID, spec.Version, 10)
+	audit, auditErr := store.Audit(context.Background(), spec.ID, spec.Version, 10)
+	if !errors.Is(err, sequencer.ErrUnknownResult) || errors.Is(err, sequencer.ErrStaleOwner) || snapshotErr != nil || record.State != sequencer.Indeterminate || !record.LeaseExpiresAt.IsZero() || !record.UpdatedAt.After(initial.Add(lease)) {
+		t.Fatalf("renewed lease lost settlement: error=%v record=%+v snapshot error=%v", err, record, snapshotErr)
+	}
+	if historyErr != nil || len(history) != 1 || history[0].State != sequencer.Indeterminate || auditErr != nil || len(audit) == 0 || audit[len(audit)-1].To != sequencer.Indeterminate {
+		t.Fatalf("unknown ledger outcome: history=%+v error=%v audit=%+v error=%v", history, historyErr, audit, auditErr)
+	}
+	releaseOnce.Do(func() { close(release) })
+	wait(handlerStopped, "late callback return")
+	after, _ := store.Snapshot(context.Background(), spec.ID, spec.Version)
+	afterHistory, _ := store.History(context.Background(), spec.ID, spec.Version, 10)
+	afterAudit, _ := store.Audit(context.Background(), spec.ID, spec.Version, 10)
+	if !reflect.DeepEqual(record, after) || !reflect.DeepEqual(history, afterHistory) || !reflect.DeepEqual(audit, afterAudit) {
+		t.Fatal("late callback changed the unknown ledger")
 	}
 }
 

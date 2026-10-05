@@ -1,6 +1,6 @@
 # Quickstart
 
-After the stable v2.0.0 candidate is published, install it with:
+Install the published v2.0.0 module with:
 
 ```sh
 go get github.com/faustbrian/go-sequencer/v2@v2.0.0

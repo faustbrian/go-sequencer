@@ -20,10 +20,10 @@ filesystem scan. Applications construct operations, stores, runners, transport
 adapters, authentication, and dependencies. Callback execution and observer
 delivery use the bounded goroutine lifecycles documented below.
 
-The v2 source on main requires Go 1.27.0 or later.
-The v2 module resolves only after the `v2.0.0` tag is published. Check
-[Releases](https://github.com/faustbrian/go-sequencer/releases) before installing;
-v1 consumers remain on `github.com/faustbrian/go-sequencer`.
+The published v2 module requires Go 1.27.0 or later. V2.0.0 established the
+`github.com/faustbrian/go-sequencer/v2` module path; v1 consumers remain on
+`github.com/faustbrian/go-sequencer`. See
+[Releases](https://github.com/faustbrian/go-sequencer/releases) for stable versions.
 
 ## Install
 
@@ -33,10 +33,10 @@ Install the released v1 module:
 go get github.com/faustbrian/go-sequencer
 ```
 
-After the `v2.0.0` tag is published, install the v2 module with:
+Install the released v2 module with:
 
 ```sh
-go get github.com/faustbrian/go-sequencer/v2@v2.0.0
+go get github.com/faustbrian/go-sequencer/v2
 ```
 
 Read the [compatibility guide](docs/compatibility.md) before moving existing

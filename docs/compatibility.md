@@ -1,8 +1,8 @@
 # Compatibility
 
-The stable v2.0.0 candidate requires and tests with Go 1.27.0. It is not installable
-until the `v2.0.0` release is published; v1 remains available from the
-module path without the `/v2` suffix.
+The published v2 module requires Go 1.27.0 or later. V2.0.0 established the
+stable `/v2` module path; v1 remains available from the module path without
+that suffix.
 PostgreSQL 18 is the reference integration target; SQL uses ordinary arrays,
 JSONB, row locks, partial indexes, and server timestamps.
 
@@ -26,7 +26,8 @@ queue route for any rollback window that still requires old-version claims.
 
 ## Migrating from v1
 
-After v2 publication, change the module and every package import from
+To adopt the published v2 module, change the required module and every
+package import from
 `github.com/faustbrian/go-sequencer` to
 `github.com/faustbrian/go-sequencer/v2`. Give converted definitions a new
 version and `ChecksumBytes` checksum, and dispatch new commands with that exact
@@ -35,16 +36,18 @@ old workers before retiring their route; v2 workers cannot claim legacy opaque
 checksums. Review the new handler cancellation acknowledgement and best-effort
 observer delivery contracts before rollout.
 
-The local Golib ecosystem has no owned runtime consumer of sequencer. The
-released `go-library-tools/release/compatibility-consumer` fixture is the only
-direct consumer found; it remains pinned to v1 until v2 is published, then must
-add a distinct v2 compatibility import without replacing its v1 coverage.
+The module manifest declares no owned runtime consumers. The released
+[go-library-tools v1.8.5 compatibility fixture](https://github.com/faustbrian/go-library-tools/tree/v1.8.5/release/compatibility-consumer)
+covers sequencer v1 only; it does not establish v2 compatibility. A v2 release
+requires its own clean public-consumer evidence. Retain v1 coverage when
+expanding a shared fixture to cover v2.
 
-Publication requires a reviewed v2 API baseline and green required CI on the
-exact main source. The immutable `v2.0.0` tag must then be published and verified
-through a clean public consumer before delivery is complete. Secret scanning
-uses the authenticated, checksum-pinned go-library-tools v1.7.2 contract;
-local results do not establish hosted CI or publication.
+Each stable v2 release requires a reviewed API baseline, green required CI on
+the exact main source, and a successful release rehearsal. Publish a new
+immutable version tag, then verify that exact public module through a clean
+consumer before delivery is complete. Secret scanning uses the authenticated,
+checksum-pinned go-library-tools v1.7.2 contract; local results do not establish
+hosted CI or publication.
 
 Ledger migrations are versioned and reversible for development. Production
 rollback must account for retained history and must never drop tables merely to

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 2.0.1 - 2026-10-05
+
+### Changed
+
+- Upgrade the PostgreSQL driver to PGX v5.11.0 while retaining the existing
+  v2 API and transactional ledger contract.
+
+### Compatibility
+
+- Direct PGX users implementing `Rows` must provide its new `TypeMap` method.
+  Review upstream connection-string parsing and text timestamp presentation
+  changes when configuring pools. Sequencer preserves timestamp instants and
+  does not promise fixed server offsets or locations.
+
+### Maintenance
+
+- Keep scripted PostgreSQL rows compatible with the driver and exercise live
+  fenced renewal through unknown settlement without scheduler-dependent
+  expiry assumptions.
+- Adopt the immutable shared CI workflow v1.8.5 while retaining authenticated
+  go-library-tools v1.7.2.
+- Correct installation and consumer guidance for the already-published v2
+  module.
+
 ## 2.0.0 - 2026-09-28
 
 ### Changed

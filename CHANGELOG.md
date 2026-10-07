@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.2 - 2026-10-07
+
+### Maintenance
+
+- Update the Docker API dependency used by PostgreSQL integration tests
+  to v1.56.1 while preserving the v2 API and runtime dependency graph.
+
 ## 2.0.1 - 2026-10-05
 
 ### Changed

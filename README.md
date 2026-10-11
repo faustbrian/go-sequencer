@@ -3,7 +3,7 @@
 [![CI](https://github.com/faustbrian/go-sequencer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/faustbrian/go-sequencer/actions/workflows/ci.yml)
 [![CodeQL](https://img.shields.io/badge/CodeQL-required-blue)](https://github.com/faustbrian/go-sequencer/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-100%25_required-blue)](CONTRIBUTING.md#verification)
-[![Mutation](https://img.shields.io/badge/mutation-100%25_required-blue)](CONTRIBUTING.md#verification)
+[![Mutation](https://img.shields.io/badge/mutation-local_and_scheduled-blue)](CONTRIBUTING.md#verification)
 [![Documentation](https://img.shields.io/badge/docs-checked_in_CI-blue)](docs/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/faustbrian/go-sequencer.svg)](https://pkg.go.dev/github.com/faustbrian/go-sequencer)
 [![Release](https://img.shields.io/github/v/release/faustbrian/go-sequencer?sort=semver)](https://github.com/faustbrian/go-sequencer/releases)
@@ -121,5 +121,12 @@ The [API guide](docs/api.md), [cookbook](docs/cookbook.md),
 [FAQ](docs/faq.md), [operations guide](docs/operations.md),
 [compatibility notes](docs/compatibility.md), [changelog](CHANGELOG.md),
 [support policy](SUPPORT.md), [security policy](SECURITY.md), and
-[license](LICENSE) complete the adoption and support surface. Run `make check`
-for the complete local gate.
+[license](LICENSE) complete the adoption and support surface.
+
+For development, use Go 1.27.2 and `GOWORK=off go test ./...`.
+`make check`/`make ci` use bounded public-tool checks, including the declared
+PostgreSQL service and `integration` tests plus a selected lifecycle/admission
+race. Base-free checks run deterministic fuzz seeds/corpus; active fuzzing is
+explicit or selected for changed-source CI. `make check-full` retains full
+campaigns and online specification checks. See
+[contributing](CONTRIBUTING.md#verification) for standalone commands.

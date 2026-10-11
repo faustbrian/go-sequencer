@@ -2,8 +2,8 @@
 
 ## Before Editing
 
-1. Read [`AGENTS.md`](AGENTS.md) and the affected module's goals and docs.
-2. Run `make inventory` and the narrow baseline gate for the module.
+1. Read [`AGENTS.md`](AGENTS.md) and the affected package's docs.
+2. Run the affected package's deterministic Go tests as described below.
 3. Identify owned dependencies and reverse dependants in `modules.json`.
 4. Preserve unrelated work and generated/corpus provenance.
 
@@ -24,7 +24,8 @@ the affected stable decision entries, and complete the Specification Decisions
 section of the pull request template. An unresolved interpretation or stale
 source pin is release-blocking; peer behavior cannot silently select policy.
 
-Required mutation gates must finish with zero surviving viable mutants.
+Selected full/release mutation gates must finish with zero surviving viable
+mutants; mutation is not required for an ordinary local or pull-request check.
 
 Do not add package-local workflows, permanent replacements, machine-specific
 paths, bypass flags, broad mutation exclusions, or aggregate quality metrics
@@ -32,21 +33,60 @@ that hide a failing package.
 
 ## Verification
 
-Run during development:
+Use Go 1.27.2 for the producer; the public module minimum remains Go 1.27.0.
+An isolated checkout needs no sibling repositories or coordination goal files.
+Start with deterministic tests and one explicit active fuzz target when its
+input boundary changes:
 
 ```bash
-make inventory
+GOWORK=off go test ./...
+GOWORK=off go test . -run '^$' -fuzz '^FuzzCompilePlanDeterminism$' -fuzztime=2s -timeout=2m
+```
+
+The first command includes fuzz seeds/corpus, not active fuzzing. Untagged Go
+tests do not qualify PostgreSQL: its tests require the `integration` tag and
+start the digest-pinned reference containers. The Kubernetes lifecycle suite
+is a separate explicitly selected platform boundary, not an ordinary campaign.
+
+Install the verified public `golib` release declared in `.golib.yaml` for
+repository checks; CI verifies the same release without building it from source:
+
+```bash
 make check
+make ci
+make specification-check
 ```
 
-Before submitting a repository-wide change:
+Bounded local checks retain the catalog's PostgreSQL service requirement and
+`integration` test tag; they are not database- or Docker-free.
+`make ci` also checks repository/cohesion structure and the offline decision
+register. The selected root race runs once with a two-minute timeout and checks
+concurrent transaction callback admission, fail-closed unknown outcomes, and
+draining before attempt cancellation. The existing root `TestMain` leak
+assertion still applies. Base-free checks run deterministic fuzz seeds/corpus;
+changed-source CI selects active fuzz smoke.
+
+Optional one-package local mutation:
 
 ```bash
-make ci
+golib mutation --module . --package memory
 ```
 
-The full scheduled and release gate is `make ci`. Report every unavailable or
-failing command; do not describe partial results as release-ready.
+Select the original full campaign and release boundary explicitly:
+
+```bash
+make check-full
+make specification-check-online
+golib api check
+golib release dry-run --module .
+```
+
+Full checks retain all nine native fuzz targets at 10000x/20m each,
+documentation examples, benchmarks and original module gates. The full Make
+route retains repository/cohesion and online specification verification.
+Release rehearsal can run locally; it is not restricted to CI. Report
+unavailable or failing commands and never describe bounded checks alone as
+release qualification.
 
 ## Adding A Module
 

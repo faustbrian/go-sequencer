@@ -1,6 +1,6 @@
 schema_version: 1
-tool_version: v1.7.2
-tool_checksums_sha256: 0f83e24640538fb07d02e5ce6c7e61368d5f17d93ac2c6b9c96f9e75c63a4818
+tool_version: v2.1.1
+tool_checksums_sha256: 4e0a38f76cbff547541f3164a0e59e958cf2f62d7b5cea19d7a4d1c51fe5e977
 
 manifest:
   modules: modules.json
@@ -23,6 +23,15 @@ api:
       path: api/v2.txt
 
 operations:
+  - module: .
+    gate: local-test
+    steps:
+      - type: go-test
+        packages: ["."]
+        run: '^Test(ConcurrentTransactionCallbackAdmissionIsExactlyOnce|FleetStopsAcceptingBeforeCancelingOwnedAttempts)$'
+        race: true
+        count: 1
+        timeout: 2m
   - module: .
     gate: docs
     steps:

@@ -46,7 +46,7 @@ Each stable v2 release requires a reviewed API baseline, green required CI on
 the exact main source, and a successful release rehearsal. Publish a new
 immutable version tag, then verify that exact public module through a clean
 consumer before delivery is complete. Secret scanning uses the authenticated,
-checksum-pinned go-library-tools v1.7.2 contract; local results do not establish
+checksum-pinned go-library-tools v2.1.3 contract; local results do not establish
 hosted CI or publication.
 
 Ledger migrations are versioned and reversible for development. Production

@@ -1,14 +1,14 @@
 GOLIB ?= golib
 
-.PHONY: check check-full ci cohesion inventory repository-check specification-check specification-check-online
+.PHONY: source-docs-check check check-full ci cohesion inventory repository-check specification-check specification-check-online
 
-check:
+check: source-docs-check
 	$(GOLIB) check --local --all
 
-check-full: repository-check specification-check-online cohesion
+check-full: source-docs-check repository-check specification-check-online cohesion
 	$(GOLIB) check --all
 
-ci: repository-check specification-check cohesion check
+ci: source-docs-check repository-check specification-check cohesion check
 
 cohesion:
 	$(GOLIB) cohesion check
@@ -24,3 +24,6 @@ specification-check:
 
 specification-check-online:
 	$(GOLIB) specification check --online
+
+source-docs-check:
+	$(GOLIB) source-docs check

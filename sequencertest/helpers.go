@@ -1,5 +1,8 @@
 // Package sequencertest provides deterministic operations, clocks, and fault
 // injection helpers for sequencer consumers and store conformance suites.
+//
+// Helpers own no timers or background work. Fixture checksums hash the operation
+// ID, not handler source; they are test identities, not production provenance.
 package sequencertest
 
 import (
@@ -38,7 +41,9 @@ func (clock *Clock) Advance(duration time.Duration) {
 	clock.now = clock.now.Add(duration)
 }
 
-// Operation creates a valid stable one-time fixture operation.
+// Operation creates a one-time version-one fixture with Channel test and a one-minute
+// timeout. ID still needs to pass NewOperation validation; its checksum hashes ID
+// rather than the handler. A nil handler selects a no-op, but typed nil is retained.
 func Operation(id sequencer.OperationID, handler sequencer.Handler) sequencer.OperationSpec {
 	if handler == nil {
 		handler = sequencer.HandlerFunc(func(context.Context, sequencer.Attempt) (sequencer.Output, error) {
@@ -56,16 +61,26 @@ func Operation(id sequencer.OperationID, handler sequencer.Handler) sequencer.Op
 
 // Faults inject errors at durable store boundaries.
 type Faults struct {
-	Register       error
-	ClaimNext      error
-	MarkRunning    error
-	RenewLease     error
-	Complete       error
+	// Register is returned before delegation when non-nil.
+	Register error
+	// ClaimNext is returned before delegation when non-nil.
+	ClaimNext error
+	// MarkRunning is returned before delegation when non-nil.
+	MarkRunning error
+	// RenewLease is returned before delegation when non-nil.
+	RenewLease error
+	// Complete is returned before delegation when non-nil.
+	Complete error
+	// RecoverExpired is returned before delegation when non-nil.
 	RecoverExpired error
-	Snapshot       error
-	History        error
-	Audit          error
-	Reset          error
+	// Snapshot is returned before delegation when non-nil.
+	Snapshot error
+	// History is returned before delegation when non-nil.
+	History error
+	// Audit is returned before delegation when non-nil.
+	Audit error
+	// Reset is returned before delegation when non-nil.
+	Reset error
 }
 
 // FaultStore wraps a real store while injecting selected boundary failures.
@@ -74,7 +89,9 @@ type FaultStore struct {
 	faults Faults
 }
 
-// NewFaultStore constructs a fault-injecting store wrapper.
+// NewFaultStore copies fault selection and borrows the store and error values.
+// It does not validate a nil store; unfaulted methods need a usable delegate.
+// RenewLease returns ErrInvalidLease if the delegate lacks LeaseStore capability.
 func NewFaultStore(store sequencer.Store, faults Faults) *FaultStore {
 	return &FaultStore{Store: store, faults: faults}
 }

@@ -1,5 +1,10 @@
 // Package sequencerqueue bridges durable operation identities to asynchronous queues.
 // It intentionally carries no handler payload, transaction, or secret data.
+//
+// Transports, decoding limits, authentication, durable execution and consumer
+// lifecycle remain application-owned. No background consumer is started; calls
+// use the supplied non-nil context and borrowed collaborators, which must support
+// any concurrent dispatch or handling. Identity-only messages are not signatures.
 package sequencerqueue
 
 import (
@@ -29,25 +34,37 @@ var (
 
 // Request identifies the immutable definition to dispatch.
 type Request struct {
+	// OperationID identifies the local definition to execute.
 	OperationID sequencer.OperationID `json:"operation_id"`
-	Version     uint                  `json:"version"`
-	Checksum    string                `json:"checksum"`
-	Channel     string                `json:"channel,omitempty"`
+	// Version is its exact nonzero version.
+	Version uint `json:"version"`
+	// Checksum is its canonical declared digest, not a message signature.
+	Checksum string `json:"checksum"`
+	// Channel is an optional valid group, or the exact configured channel binding.
+	Channel string `json:"channel,omitempty"`
 }
 
-// Message is a payload-free durable queue command. Queue redelivery is safe
-// because the worker delegates eligibility and ownership to the ledger.
+// Message is a payload-free queue command, not proof of authenticity or completion.
+// Safe redelivery requires the application executor to enforce ledger ownership.
 type Message struct {
+	// OperationID identifies the local definition to execute.
 	OperationID sequencer.OperationID `json:"operation_id"`
-	Version     uint                  `json:"version"`
-	Checksum    string                `json:"checksum"`
-	Channel     string                `json:"channel,omitempty"`
-	DeliveryID  string                `json:"delivery_id"`
+	// Version is its exact nonzero version.
+	Version uint `json:"version"`
+	// Checksum is its canonical declared digest, not a message signature.
+	Checksum string `json:"checksum"`
+	// Channel is an optional valid group, or the exact configured channel binding.
+	Channel string `json:"channel,omitempty"`
+	// DeliveryID is nonempty and at most 255 bytes; dispatch generates a fresh value
+	// once per call. It correlates admission, not authorization or effect idempotency.
+	DeliveryID string `json:"delivery_id"`
 }
 
 // Publisher is the narrow seam implemented by a queue transport wrapper. Any
 // returned error means queue admission is unknown rather than definitely absent.
 type Publisher interface {
+	// Publish sends one identity-only message to the configured nonempty topic.
+	// Any error leaves admission unknown; a nil result confirms provider admission only.
 	Publish(context.Context, string, Message) error
 }
 
@@ -79,8 +96,10 @@ func NewDispatcher(publisher Publisher, topic string) (*Dispatcher, error) {
 	return &Dispatcher{publisher: publisher, topic: topic}, nil
 }
 
-// Dispatch publishes an operation command. It never claims cross-operation
-// or enqueue-to-worker transaction atomicity.
+// Dispatch validates identity and publishes one freshly identified command.
+// A publish error returns the same Message with ErrPublishOutcomeUnknown for
+// reconciliation. Calling Dispatch again creates another DeliveryID.
+// It never claims cross-operation or enqueue-to-worker transaction atomicity.
 func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Message, error) {
 	if !request.OperationID.Valid() || request.Version == 0 ||
 		!sequencer.ValidChecksum(request.Checksum) ||
@@ -99,13 +118,18 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Me
 // error confirms durable completion, ErrUnknownResult leaves the result
 // unsettled, and every other error is a definite failure.
 type Executor interface {
+	// ExecuteMessage must enforce ledger eligibility, checksum and fencing on redelivery.
+	// Nil confirms durable completion; ErrUnknownResult leaves delivery unsettled;
+	// other errors are treated as definite failure for rejection.
 	ExecuteMessage(context.Context, Message) error
 }
 
 // Settlement controls one queue delivery after durable execution returns.
 // Implementations bind these operations to the delivery being handled.
 type Settlement interface {
+	// Acknowledge confirms settlement of this delivery after durable completion.
 	Acknowledge(context.Context) error
+	// Reject confirms rejection of this delivery after a definite execution failure.
 	Reject(context.Context) error
 }
 
@@ -117,7 +141,8 @@ const (
 	Acknowledged Disposition = iota + 1
 	// Rejected means execution definitely failed and queue rejection succeeded.
 	Rejected
-	// Unsettled means execution or queue settlement remains unknown and redelivery is safe.
+	// Unsettled means execution or queue settlement remains unknown.
+	// Reconcile unknown effects before replay unless application idempotency protects them.
 	Unsettled
 )
 
@@ -148,7 +173,8 @@ func NewChannelWorker(channel string, executor Executor) (*Worker, error) {
 	return worker, nil
 }
 
-// Handle processes one queue delivery under ledger-owned idempotency.
+// Handle validates and delegates one message; it does not acknowledge or reject it.
+// Safe redelivery depends on the injected executor enforcing the durable ledger.
 func (worker *Worker) Handle(ctx context.Context, message Message) error {
 	if !validMessage(message, worker.channel) {
 		return ErrInvalidAdapter

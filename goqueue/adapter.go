@@ -1,4 +1,6 @@
 // Package goqueue provides the retained Sequencer queue adapter.
+// Named facade types remain distinct from canonical adapter types; values are
+// bridged while sentinels, defaults and runtime semantics are preserved.
 //
 // Deprecated: use github.com/faustbrian/go-sequencer/v2/adapters/queue. This
 // package remains supported for the longer of 180 days after successor public
@@ -21,23 +23,35 @@ var (
 
 // Request identifies the immutable definition to dispatch.
 type Request struct {
+	// OperationID identifies the local definition to execute.
 	OperationID sequencer.OperationID `json:"operation_id"`
-	Version     uint                  `json:"version"`
-	Checksum    string                `json:"checksum"`
-	Channel     string                `json:"channel,omitempty"`
+	// Version is its exact nonzero version.
+	Version uint `json:"version"`
+	// Checksum is its canonical declared digest, not a message signature.
+	Checksum string `json:"checksum"`
+	// Channel is an optional valid group, or the exact configured channel binding.
+	Channel string `json:"channel,omitempty"`
 }
 
 // Message is a payload-free durable queue command.
 type Message struct {
+	// OperationID identifies the local definition to execute.
 	OperationID sequencer.OperationID `json:"operation_id"`
-	Version     uint                  `json:"version"`
-	Checksum    string                `json:"checksum"`
-	Channel     string                `json:"channel,omitempty"`
-	DeliveryID  string                `json:"delivery_id"`
+	// Version is its exact nonzero version.
+	Version uint `json:"version"`
+	// Checksum is its canonical declared digest, not a message signature.
+	Checksum string `json:"checksum"`
+	// Channel is an optional valid group, or the exact configured channel binding.
+	Channel string `json:"channel,omitempty"`
+	// DeliveryID is nonempty and at most 255 bytes; dispatch generates a fresh value
+	// once per call. It correlates admission, not authorization or effect idempotency.
+	DeliveryID string `json:"delivery_id"`
 }
 
 // Publisher is the narrow seam implemented by a queue transport wrapper.
 type Publisher interface {
+	// Publish sends one identity-only message to the configured nonempty topic.
+	// Any error leaves admission unknown; a nil result confirms provider admission only.
 	Publish(context.Context, string, Message) error
 }
 
@@ -68,7 +82,9 @@ func NewDispatcher(publisher Publisher, topic string) (*Dispatcher, error) {
 	return &Dispatcher{inner: inner}, nil
 }
 
-// Dispatch publishes an operation command.
+// Dispatch delegates canonical validation and publishing through the facade.
+// Each call generates a new DeliveryID; a publish error retains that Message
+// with ErrPublishOutcomeUnknown for admission reconciliation.
 func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Message, error) {
 	message, err := dispatcher.inner.Dispatch(ctx, adapter.Request{
 		OperationID: request.OperationID,
@@ -81,12 +97,17 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, request Request) (Me
 
 // Executor performs a ledger-owned attempt for one redelivered message.
 type Executor interface {
+	// ExecuteMessage must enforce ledger eligibility, checksum and fencing on redelivery.
+	// Nil confirms durable completion; ErrUnknownResult leaves delivery unsettled;
+	// other errors are treated as definite failure for rejection.
 	ExecuteMessage(context.Context, Message) error
 }
 
 // Settlement controls one queue delivery after durable execution returns.
 type Settlement interface {
+	// Acknowledge confirms settlement of this delivery after durable completion.
 	Acknowledge(context.Context) error
+	// Reject confirms rejection of this delivery after a definite execution failure.
 	Reject(context.Context) error
 }
 
@@ -126,7 +147,8 @@ func NewChannelWorker(channel string, executor Executor) (*Worker, error) {
 	return &Worker{inner: inner}, nil
 }
 
-// Handle processes one queue delivery under ledger-owned idempotency.
+// Handle validates and delegates one message; it does not acknowledge or reject it.
+// Safe redelivery depends on the injected executor enforcing the durable ledger.
 func (worker *Worker) Handle(ctx context.Context, message Message) error {
 	return worker.inner.Handle(ctx, toCanonicalMessage(message))
 }

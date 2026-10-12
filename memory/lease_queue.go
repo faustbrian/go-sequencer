@@ -45,6 +45,8 @@ func (queue *leaseQueue) Pop() any {
 	return entry
 }
 
+// Lease heap helpers require store.mu. The map and heap index describe the same
+// live claim; renewal fixes ordering in place and settlement removes exactly it.
 func (store *Store) setLease(identifier key, expiresAt time.Time) {
 	if entry := store.leased[identifier]; entry != nil {
 		entry.expiresAt = expiresAt

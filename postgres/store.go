@@ -29,7 +29,10 @@ const (
 
 var errInvalidLedgerInteger = errors.New("sequencer/postgres: invalid ledger integer")
 
-// Store persists operation projections, attempts, and audit events.
+// Store persists operation projections, attempts and audit events on a borrowed
+// pool. Methods may run concurrently; the caller must keep the pool open.
+// The zero Store is not usable. Mutating transaction commit errors are unknown
+// outcomes, and rollback is attempted with a detached five-second deadline.
 type Store struct{ database database }
 
 type database interface {
@@ -49,6 +52,8 @@ func New(pool *pgxpool.Pool) (*Store, error) {
 
 func newStore(database database) *Store { return &Store{database: database} }
 
+// Cancellation of admission must not skip transaction cleanup; the bounded
+// detached rollback does not turn a failed commit acknowledgement into certainty.
 func rollbackDetached(parent context.Context, tx pgx.Tx) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), defaultRollbackTimeout)
 	defer cancel()
@@ -194,7 +199,10 @@ WHERE operation_id = $1 AND version = $2 AND dependency_refs IS NULL`,
 	return nil
 }
 
-// ClaimNext transactionally claims the first dependency-ready plan candidate.
+// ClaimNext transactionally selects in request order with SKIP LOCKED, so a locked
+// earlier candidate may be skipped. Server time is authoritative; Now is ignored.
+// LeaseDuration is truncated to milliseconds and must retain at least one.
+// Versions/counters must fit signed PostgreSQL bigint, unlike memory uint bounds.
 func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
 	if !owneridentity.Valid(request.Owner, sequencer.DefaultMaxActorBytes, sequencer.SanitizePersistenceText) || request.LeaseDuration <= 0 || (len(request.Candidates) == 0 && len(request.OperationIDs) == 0) {
 		return sequencer.Claim{}, sequencer.ErrInvalidOperation
@@ -466,8 +474,10 @@ WHERE operation_id = $1 AND version = $2 AND attempt_number = $3
 	return record, nil
 }
 
-// RenewLease extends a claimed or running attempt under its current fencing proof.
-// PostgreSQL time is authoritative so pod clock skew cannot shorten ownership.
+// RenewLease extends current unexpired claimed/running ownership without shortening
+// expiry. Server time is authoritative and caller now is ignored; duration is
+// truncated to milliseconds and must retain at least one. A missing/stale/expired
+// proof returns ErrStaleOwner; database errors remain provider errors.
 func (store *Store) RenewLease(ctx context.Context, ownership sequencer.Ownership, _ time.Time, duration time.Duration) (time.Time, error) {
 	if !ownershipValid(ownership) {
 		return time.Time{}, sequencer.ErrInvalidOperation
@@ -683,7 +693,9 @@ SELECT (SELECT count(*) FROM candidates),
 	return int(candidates), nil
 }
 
-// Snapshot returns one current projection without payload history.
+// Snapshot returns an independently decoded current projection without payload history.
+// Missing rows are ErrNotFound; malformed/oversized persisted identities fail closed.
+// SQL NULL lease timestamps are read as Unix epoch, not Go zero time.
 func (store *Store) Snapshot(ctx context.Context, id sequencer.OperationID, version uint) (sequencer.Record, error) {
 	var record sequencer.Record
 	var state string
@@ -759,7 +771,9 @@ WHERE operation_id = $1 AND version = $2`, id, version).Scan(
 	return record, err
 }
 
-// History returns a bounded attempt history in attempt order.
+// History independently decodes the latest limit attempts, then returns ascending
+// attempt order. Limit must be in [1, DefaultMaxHistory]; no rows returns an empty
+// history, unlike memory ErrNotFound. Live completion timestamps read as Unix epoch.
 func (store *Store) History(ctx context.Context, id sequencer.OperationID, version uint, limit int) ([]sequencer.AttemptRecord, error) {
 	if limit < 1 || limit > sequencer.DefaultMaxHistory {
 		return nil, sequencer.ErrResourceLimit
@@ -812,7 +826,8 @@ ORDER BY attempt_number DESC LIMIT $3`, id, version, limit)
 	return history, nil
 }
 
-// Audit returns bounded append-only state and administration events.
+// Audit independently decodes the latest limit append-only events in ascending
+// event order. Limit must be in [1, DefaultMaxHistory]; no rows returns an empty slice.
 func (store *Store) Audit(ctx context.Context, id sequencer.OperationID, version uint, limit int) ([]sequencer.AuditEvent, error) {
 	if limit < 1 || limit > sequencer.DefaultMaxHistory {
 		return nil, sequencer.ErrResourceLimit

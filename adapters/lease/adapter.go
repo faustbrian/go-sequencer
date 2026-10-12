@@ -1,5 +1,9 @@
 // Package sequencerlease bridges operation-scoped singleton work to a fenced lease
 // client such as lease without coupling the root package to one backend.
+//
+// The borrowed provider owns acquisition and renewal. This adapter only releases
+// accepted handles; it installs no renewal loop and cannot stop effects on expiry.
+// Calls require non-nil contexts and cooperative cleanup implementations.
 package sequencerlease
 
 import (
@@ -22,19 +26,27 @@ var ErrInvalidAdapter = errors.New("sequencer/golease: invalid adapter")
 
 // Ownership is the explicit proof passed to protected resource writes.
 type Ownership struct {
-	Owner   string
+	// Owner is the acquired nonempty identity, not an authenticated principal.
+	Owner string
+	// Fencing is the nonzero token that protected resource writes must enforce.
 	Fencing uint64
 }
 
 // Handle is the narrow fenced handle exposed by a lease wrapper.
 type Handle interface {
+	// Owner returns the stable identity bound to the acquired handle.
 	Owner() string
+	// Fencing returns its stable nonzero generation token.
 	Fencing() uint64
+	// Release relinquishes this handle without releasing a successor owner.
+	// It must honor the detached cleanup deadline.
 	Release(context.Context) error
 }
 
 // Acquirer obtains one bounded distributed lease.
 type Acquirer interface {
+	// Acquire returns a fenced handle for the key and positive TTL.
+	// The provider owns availability, cancellation and lease renewal semantics.
 	Acquire(context.Context, string, time.Duration) (Handle, error)
 }
 
@@ -58,6 +70,9 @@ func NewWithCleanupTimeout(acquirer Acquirer, cleanupTimeout time.Duration) (*Ad
 }
 
 // WithClaim acquires, proves, executes, and compare-releases one singleton.
+// Release is deferred even on malformed proof or callback panic, with a detached
+// cleanup deadline. Release failure carries ErrUnknownResult. The adapter does
+// not renew the lease or stop a callback at TTL expiry; protected writes must fence.
 func (adapter *Adapter) WithClaim(ctx context.Context, key string, ttl time.Duration, execute func(context.Context, Ownership) error) (err error) {
 	if key == "" || ttl <= 0 || execute == nil {
 		return ErrInvalidAdapter

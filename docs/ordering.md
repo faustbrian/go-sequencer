@@ -1,7 +1,8 @@
 # Ordering
 
 The planner uses dependency edges, not source-file order. It performs a
-deterministic topological sort with lexicographic tie-breaking. Identical input
+deterministic dependency-first depth-first traversal of sorted operation IDs and
+sorted dependency IDs, not a globally smallest ready-node sort. Identical input
 therefore produces identical plans across replicas and deployments.
 
 Missing dependencies and cycles are deployment errors. Dependencies must be

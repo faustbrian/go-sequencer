@@ -23,7 +23,8 @@ var (
 )
 
 const (
-	// DefaultLeaseDuration is the default upper bound for one claimed attempt.
+	// DefaultLeaseDuration is the initial ownership window, extended by fenced renewals;
+	// it is not the maximum total lifetime of a claimed attempt.
 	DefaultLeaseDuration = 5 * time.Minute
 	// DefaultHandlerStopWait bounds how long execution waits for a callback to
 	// acknowledge cancellation before treating it as still active.
@@ -33,7 +34,10 @@ const (
 )
 
 // Clock makes execution and recovery decisions deterministic.
-type Clock interface{ Now() time.Time }
+type Clock interface {
+	// Now returns the current decision instant; implementations must support concurrent callers.
+	Now() time.Time
+}
 
 type wallClock struct{}
 
@@ -41,18 +45,27 @@ func (wallClock) Now() time.Time { return time.Now() }
 
 // TransactionManager scopes exactly one local attempt transaction.
 type TransactionManager interface {
+	// Within must invoke the callback exactly once with a non-nil context and transaction,
+	// wait for it, preserve its error and report commit failure. Callback context values
+	// are retained while attempt cancellation and deadline remain effective.
+	// The ledger owns separate claim/completion transactions, even on the same database.
 	Within(context.Context, func(context.Context, any) error) error
 }
 
 // Approval is an application-authorized and attributable execution decision.
 type Approval struct {
+	// Approved permits continuing to the condition and handler when true.
 	Approved bool
-	Actor    string
-	Reason   string
+	// Actor is nonempty attributable text, at most DefaultMaxActorBytes before sanitization.
+	Actor string
+	// Reason is a nonempty explanation, at most DefaultMaxReasonBytes before sanitization.
+	Reason string
 }
 
 // Approver supplies application-owned authorization for declared operations.
 type Approver interface {
+	// Approve returns the application authorization decision and bounded attribution.
+	// It shares the attempt deadline; denial blocks the operation before handler effects.
 	Approve(context.Context, OperationSpec) (Approval, error)
 }
 
@@ -72,19 +85,31 @@ const (
 
 // Event carries bounded execution metadata to an observer.
 type Event struct {
-	Type      EventType
+	// Type identifies the observed execution boundary.
+	Type EventType
+	// Operation identifies the local definition.
 	Operation OperationID
-	Channel   string
-	Attempt   uint
-	State     State
-	At        time.Time
-	Err       error
+	// Channel is the operation execution group.
+	Channel string
+	// Attempt is the lifetime durable attempt number.
+	Attempt uint
+	// State is the state reported at this boundary.
+	State State
+	// At is the runner clock instant for the notification, not necessarily database time.
+	At time.Time
+	// Err contains a stable classification only; original callback error text is not delivered.
+	Err error
 }
 
-// Observer receives best-effort lifecycle notifications. Delivery uses one
-// worker and a bounded queue per observer; overflow events are dropped and
-// panics are isolated from execution.
-type Observer interface{ Observe(Event) }
+// Observer receives best-effort lifecycle notifications through one lazy worker
+// and at most 16 pending events per observer. Overflow is dropped and panics
+// are isolated. Execution does not wait for delivery; a blocking Observe can
+// retain its worker after Execute or Run returns, with no flush or Close API.
+type Observer interface {
+	// Observe handles one notification. Blocking retains its delivery worker;
+	// there is no cancellation, flush or close acknowledgement in this interface.
+	Observe(Event)
+}
 
 // ObserverFunc adapts a function to Observer.
 type ObserverFunc func(Event)
@@ -94,15 +119,28 @@ func (function ObserverFunc) Observe(event Event) { function(event) }
 
 // RunnerOptions configures bounded synchronous execution.
 type RunnerOptions struct {
-	Owner           string
-	Environment     string
-	Channels        []string
-	Clock           Clock
-	LeaseDuration   time.Duration
+	// Owner must be nonempty, at most DefaultMaxActorBytes and unchanged by persistence sanitization.
+	Owner string
+	// Environment is matched exactly against each selected operation allowlist.
+	Environment string
+	// Channels is copied, validated and sorted; empty selects all plan channels.
+	// The complete plan is registered even when execution is filtered.
+	Channels []string
+	// Clock is borrowed; nil selects wall time. Custom clocks must support concurrent calls.
+	Clock Clock
+	// LeaseDuration is positive; zero selects DefaultLeaseDuration.
+	// Each selected operation timeout must be strictly shorter; renewal may extend ownership.
+	LeaseDuration time.Duration
+	// HandlerStopWait bounds acknowledgement after cancellation; zero selects
+	// DefaultHandlerStopWait and values above MaxHandlerStopWait are rejected.
 	HandlerStopWait time.Duration
-	Transactions    TransactionManager
-	Approver        Approver
-	Observers       []Observer
+	// Transactions is borrowed and required for selected transactional operations.
+	Transactions TransactionManager
+	// Approver is borrowed and required for selected approval-gated operations.
+	Approver Approver
+	// Observers is copied with nil entries omitted, at most 128 entries.
+	// Callbacks are borrowed and may outlive execution; delivery is best effort.
+	Observers []Observer
 }
 
 // RunResult summarizes the complete plan without hiding allowed failures.
@@ -119,24 +157,41 @@ const (
 
 // OperationResult reports one terminal operation decision.
 type OperationResult struct {
+	// OperationID identifies the reported definition.
 	OperationID OperationID
-	Version     uint
-	Channel     string
-	Attempts    uint
-	State       State
-	Err         error
+	// Version is its declared immutable version.
+	Version uint
+	// Channel is its execution group.
+	Channel string
+	// Attempts is the lifetime attempt number, including previous ledger attempts.
+	Attempts uint
+	// State is the reported durable outcome when settlement succeeded.
+	State State
+	// Err retains the in-process cause and may contain sensitive callback text.
+	// Inspect the returned execution error before treating State as confirmed settlement.
+	Err error
 }
 
-// Report is the complete synchronous execution result.
+// Report contains the results reached by synchronous execution, including partial
+// progress before an error. Inspect Execute's error as well as Result.
 type Report struct {
-	StartedAt  time.Time
+	// StartedAt is the runner clock instant when Execute began.
+	StartedAt time.Time
+	// FinishedAt is set when execution reaches report finalization.
 	FinishedAt time.Time
-	Result     RunResult
-	Channels   []string
+	// Result summarizes reached operation outcomes; a non-nil Execute error
+	// can leave an early partial report, so Result alone is not proof of completion.
+	Result RunResult
+	// Channels contains selected channels or sorted unique plan channels in independent storage.
+	Channels []string
+	// Operations contains reached operation results, not a guaranteed result for every plan node.
 	Operations []OperationResult
 }
 
-// Runner coordinates durable claims and bounded callback lifecycles.
+// Runner coordinates durable claims and callback deadlines. Concurrent Execute
+// calls share one retained callback slot, but do not constitute an application
+// transaction or global effect-once guarantee. Borrowed collaborators must support
+// the resulting concurrency and remain valid through any retained callbacks.
 type Runner struct {
 	plan         *Plan
 	store        Store
@@ -191,7 +246,10 @@ func (runner *Runner) reportChannels() []string {
 	return channels
 }
 
-// NewRunner validates execution dependencies and declared constraints.
+// NewRunner validates selected-channel constraints and borrows plan/store and
+// callback collaborators without starting work. Store must also implement
+// LeaseStore. It copies channels/observers, uses wall time when Clock is nil,
+// and rejects unavailable environment, approval or transaction requirements.
 func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) {
 	if plan == nil || store == nil || !owneridentity.Valid(options.Owner, DefaultMaxActorBytes, SanitizePersistenceText) {
 		return nil, ErrInvalidRunner
@@ -259,7 +317,13 @@ func NewRunner(plan *Plan, store Store, options RunnerOptions) (*Runner, error) 
 	}, nil
 }
 
-// Execute runs the immutable plan synchronously under durable ownership.
+// Execute registers the whole plan, then runs selected operations synchronously
+// in plan order using fenced claims. OneTime completed work remains complete;
+// Repeatable success is explicitly reset before a new attempt. Required failure
+// stops the run, while allowed failure remains visible in a partial report.
+// The returned error is authoritative for early/durability failure, even if a
+// partial Report has its initial Result. Use a non-nil context; completion uses
+// bounded cancellation-detached persistence, not the application transaction.
 func (runner *Runner) Execute(ctx context.Context) (Report, error) {
 	report := Report{StartedAt: runner.options.Clock.Now(), Result: RunSucceeded, Channels: runner.reportChannels()}
 	registrations := make([]Registration, 0, len(runner.plan.operations))
@@ -802,7 +866,11 @@ func prepareOutput(output Output) (Output, error) {
 	return PreparePersistenceOutput(output)
 }
 
-// PreparePersistenceOutput applies the ledger's size and redaction contract.
+// PreparePersistenceOutput validates raw summary/count/key/value bounds, sanitizes
+// a new metadata map, rejects sanitized key collisions and bounds the complete
+// JSON encoding to DefaultMaxOutputBytes. Errors return zero Output; nil Metadata
+// stays nil. The encoded-size check occurs after bounded-field copying/encoding,
+// not before all allocation. Pattern redaction cannot recognize arbitrary secrets.
 // Stores call this defensively so direct callers cannot bypass it.
 func PreparePersistenceOutput(output Output) (Output, error) {
 	if len(output.Summary) > DefaultMaxOutputBytes || len(output.Metadata) > DefaultMaxOutputMetadata {

@@ -1,4 +1,25 @@
-// Package sequencer plans and executes durable, explicitly ordered operations.
+// Package sequencer plans and executes durable, dependency-ordered application
+// operations. It is not a numeric sequence allocator or a schema migration engine.
+//
+// CompilePlan copies definition metadata and orders exact dependency identities;
+// handlers and other interface collaborators remain application-owned. NewRunner
+// executes selected channels synchronously; NewFleet owns one leaderless Run
+// lifecycle. Constructors start no background work. Collaborators must remain
+// valid for concurrent callbacks and honor contexts; no constructor detects all
+// typed-nil implementations or makes mutable callback state immutable.
+//
+// Stores own fenced claims, attempt history and audit transitions, not external
+// effects. A lease or cancellation cannot stop a paused process from writing;
+// protected resources must check fencing. Application transactions are separate
+// from ledger claim/completion, and an ambiguous effect requires reconciliation
+// or application-owned idempotency before replay. In-process returned errors may
+// retain sensitive causes; runners persist classifications and observers receive
+// classifications rather than those original causes.
+//
+// Use non-nil contexts. Arbitrary callbacks cannot be preempted: an unresponsive
+// callback can retain a quarantined goroutine, and observer delivery has no join
+// or flush contract. Callers own database pools, transports, process supervision
+// and cleanup of borrowed collaborators.
 package sequencer
 
 import (
@@ -48,7 +69,7 @@ const (
 	DefaultMaxEnvironmentBytes = 255
 	// DefaultMaxGraphDepth bounds dependency traversal depth.
 	DefaultMaxGraphDepth = 1_024
-	// DefaultMaxOutputBytes bounds persisted output summaries.
+	// DefaultMaxOutputBytes bounds raw summaries and the complete encoded persisted Output.
 	DefaultMaxOutputBytes = 64 << 10
 	// DefaultMaxErrorBytes bounds persisted sanitized error details.
 	DefaultMaxErrorBytes = 16 << 10
@@ -62,7 +83,8 @@ var identifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,254}$`)
 
 const sha256Prefix = "sha256:"
 
-// ValidChecksum reports whether value is a canonical lowercase SHA-256 digest.
+// ValidChecksum checks only the canonical sha256: plus 64 lowercase hex grammar.
+// It does not authenticate source or compare a digest to an executable handler.
 func ValidChecksum(value string) bool {
 	if len(value) != len(sha256Prefix)+64 || !strings.HasPrefix(value, sha256Prefix) || value != strings.ToLower(value) {
 		return false
@@ -71,7 +93,8 @@ func ValidChecksum(value string) bool {
 	return err == nil
 }
 
-// ChecksumBytes returns the canonical SHA-256 identity for reviewed source.
+// ChecksumBytes hashes the supplied bytes into canonical SHA-256 text.
+// Selecting reviewed source bytes and binding them to a definition are caller responsibilities.
 func ChecksumBytes(source []byte) string {
 	digest := sha256.Sum256(source)
 	return sha256Prefix + hex.EncodeToString(digest[:])
@@ -86,8 +109,11 @@ func (id OperationID) Valid() bool { return identifierPattern.MatchString(string
 
 // DependencyRef pins one prerequisite to an exact durable definition.
 type DependencyRef struct {
-	ID       OperationID
-	Version  uint
+	// ID identifies the prerequisite operation.
+	ID OperationID
+	// Version is its exact nonzero definition version.
+	Version uint
+	// Checksum pins the canonical digest declared for that version.
 	Checksum string
 }
 
@@ -137,33 +163,61 @@ const (
 
 // Policy declares bounded execution and failure behavior.
 type Policy struct {
-	Mode              ExecutionMode
-	MaxAttempts       uint
-	MaxExceptions     uint
-	Timeout           time.Duration
+	// Mode distinguishes ordinary one-time completion from explicit repeatable execution.
+	Mode ExecutionMode
+	// MaxAttempts bounds durable attempts in a replay epoch; it must be nonzero.
+	MaxAttempts uint
+	// MaxExceptions independently bounds explicitly retryable failures; it must be nonzero.
+	MaxExceptions uint
+	// Timeout is the positive deadline shared by approval, condition, transaction and handler callbacks.
+	// It must be strictly shorter than the runner lease duration.
+	Timeout time.Duration
+	// WithinTransaction requires an injected manager for a local application transaction,
+	// not an atomic transaction with ledger claim or completion.
 	WithinTransaction bool
-	RequiresApproval  bool
-	AllowedFailure    bool
-	DeadLetter        bool
-	Cancellation      CancellationMode
-	RetryMode         RetryMode
-	UnknownOutcome    UnknownOutcomePolicy
+	// RequiresApproval asks the application approver before condition or handler execution.
+	RequiresApproval bool
+	// AllowedFailure permits a partial aggregate report; it does not satisfy dependencies.
+	AllowedFailure bool
+	// DeadLetter selects DeadLettered instead of Failed for definite terminal failures.
+	DeadLetter bool
+	// Cancellation controls fleet shutdown delivery, not the operation deadline.
+	Cancellation CancellationMode
+	// RetryMode chooses durable attempts or a single externally owned inline retry loop.
+	RetryMode RetryMode
+	// UnknownOutcome defaults to blocking expired unknown work; automatic replay
+	// requires an application-owned idempotency guarantee.
+	UnknownOutcome UnknownOutcomePolicy
 }
 
-// Output is the bounded, non-secret result safe to retain in the ledger.
+// Output is application-selected summary data, not an automatically secret-free value.
+// PreparePersistenceOutput bounds and redacts known forms before ledger storage;
+// applications must exclude other credentials, personal data and payloads themselves.
 type Output struct {
-	Summary  string
+	// Summary is an intentionally non-secret result summary, bounded before persistence.
+	Summary string
+	// Metadata contains at most DefaultMaxOutputMetadata entries with non-secret values.
+	// Persistence prepares a new map; callers must not mutate this map during preparation.
 	Metadata map[string]string
 }
 
 // Attempt identifies one durable invocation and its ownership proof.
 type Attempt struct {
+	// OperationID identifies the claimed definition.
 	OperationID OperationID
-	Version     uint
-	Number      uint
-	Owner       string
-	Fencing     uint64
-	StartedAt   time.Time
+	// Version is the exact locally executable version.
+	Version uint
+	// Number is the lifetime attempt number, distinct from the replay-epoch budget.
+	Number uint
+	// Owner is the exact accepted fencing identity.
+	Owner string
+	// Fencing is the monotonically increasing claim token; protected external writes
+	// must check it independently of the ledger.
+	Fencing uint64
+	// StartedAt is the claim timestamp supplied by the store.
+	StartedAt time.Time
+	// Transaction is a borrowed application handle only when WithinTransaction is enabled.
+	// It is valid within the manager callback, not for later asynchronous work.
 	Transaction any
 	// Budget is non-nil only for InlineRetries. Every inline callback
 	// execution must consume it.
@@ -173,6 +227,10 @@ type Attempt struct {
 // Handler executes one local attempt. Dependencies belong in the concrete
 // handler value; the sequencer never performs global dependency lookup.
 type Handler interface {
+	// Handle performs the application effect with the attempt context and fencing proof.
+	// Implementations own effect safety and cancellation cooperation; replay
+	// idempotency is application-owned, not required for non-replayed effects.
+	// Returning an error cannot prove that an external effect did not commit.
 	Handle(context.Context, Attempt) (Output, error)
 }
 
@@ -186,12 +244,16 @@ func (function HandlerFunc) Handle(ctx context.Context, attempt Attempt) (Output
 
 // Decision is an auditable conditional execution result.
 type Decision struct {
-	Run    bool
+	// Run admits handler execution when true; false records a conditional skip.
+	Run bool
+	// Reason is bounded audit text for a skip, not a place for payloads or credentials.
 	Reason string
 }
 
 // Condition decides whether a declared operation should run.
 type Condition interface {
+	// Evaluate runs before Handle within the same attempt deadline.
+	// A false Run skips the handler; an error is a permanent condition failure.
 	Evaluate(context.Context, Attempt) (Decision, error)
 }
 
@@ -205,12 +267,20 @@ func (function ConditionFunc) Evaluate(ctx context.Context, attempt Attempt) (De
 
 // OperationSpec is the complete declarative definition of an operation.
 type OperationSpec struct {
-	ID             OperationID
-	Version        uint
-	Checksum       string
-	Description    string
-	Tags           []string
-	Channel        string
+	// ID is the stable lowercase identifier shared with the ledger.
+	ID OperationID
+	// Version is a nonzero immutable definition version, not an automatically allocated number.
+	Version uint
+	// Checksum is the caller-declared canonical SHA-256 definition identity.
+	// Validation does not recompute a digest from Handler or authenticate its source.
+	Checksum string
+	// Description must be nonempty and at most DefaultMaxDescriptionBytes.
+	Description string
+	// Tags are copied metadata, limited by DefaultMaxTags and DefaultMaxTagBytes.
+	Tags []string
+	// Channel is a required identifier selecting an execution group, not a transport topic.
+	Channel string
+	// DependencyRefs pin prerequisites by exact ID, version and checksum, with no duplicate IDs.
 	DependencyRefs []DependencyRef
 	// Compensates identifies the exact forward operation related to this
 	// independent operation. It must also be an explicit dependency.
@@ -219,16 +289,23 @@ type OperationSpec struct {
 	// references are rejected because selecting a dependency by ID is unsafe
 	// when multiple binary versions share a ledger.
 	Dependencies []OperationID
+	// Environments is a copied allowlist; empty permits every environment.
 	Environments []string
-	Policy       Policy
-	Condition    Condition
-	Handler      Handler
+	// Policy defines finite execution and replay behavior.
+	Policy Policy
+	// Condition is an optional borrowed callback, not a cloned collaborator.
+	Condition Condition
+	// Handler is a required borrowed callback; a typed-nil implementation is not detected.
+	Handler Handler
 }
 
-// Operation is an immutable validated operation.
+// Operation contains validated immutable metadata and borrowed callback interfaces.
+// Its zero value is not a validated definition.
 type Operation struct{ spec OperationSpec }
 
-// NewOperation validates and freezes a definition.
+// NewOperation validates identity, policies and collection bounds, then copies metadata.
+// It returns no partial operation on error; Handler and Condition are borrowed,
+// not cloned or authenticated by Checksum.
 func NewOperation(spec OperationSpec) (Operation, error) {
 	if !spec.ID.Valid() || spec.Version == 0 ||
 		!ValidChecksum(spec.Checksum) ||
@@ -278,7 +355,8 @@ func NewOperation(spec OperationSpec) (Operation, error) {
 	return Operation{spec: cloneSpec(spec)}, nil
 }
 
-// Spec returns a defensive copy of the operation definition.
+// Spec copies slices and the compensation reference; Handler and Condition still
+// refer to the same application collaborators.
 func (operation Operation) Spec() OperationSpec { return cloneSpec(operation.spec) }
 
 func cloneSpec(spec OperationSpec) OperationSpec {

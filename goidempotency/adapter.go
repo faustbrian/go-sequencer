@@ -1,4 +1,6 @@
 // Package goidempotency provides the retained Sequencer idempotency adapter.
+// Named facade types remain distinct from canonical adapter types; values are
+// bridged while sentinels, defaults and runtime semantics are preserved.
 //
 // Deprecated: use github.com/faustbrian/go-sequencer/v2/adapters/idempotency.
 // This package remains supported for the longer of 180 days after successor
@@ -27,8 +29,14 @@ type Token any
 
 // Gate is the narrow seam implemented by a fail-closed idempotency wrapper.
 type Gate interface {
+	// Begin returns ownership and whether to execute; false with nil error skips work.
+	// A true decision must supply a non-nil token and protect the logical effect durably.
 	Begin(context.Context, string) (Token, bool, error)
+	// Complete confirms the effect succeeded under the accepted token.
+	// It must honor the detached cleanup deadline.
 	Complete(context.Context, Token) error
+	// Fail records the callback failure under the accepted token; it must not
+	// authorize unsafe replay of an effect with an unknown outcome.
 	Fail(context.Context, Token, error) error
 }
 
@@ -53,6 +61,8 @@ func NewWithCleanupTimeout(gate Gate, cleanupTimeout time.Duration) (*Adapter, e
 }
 
 // Do runs only newly acquired work and records its terminal result.
+// Cleanup uses a cancellation-detached deadline; cleanup error carries ErrUnknownResult.
+// A callback panic is not recovered and does not call Complete or Fail.
 func (adapter *Adapter) Do(ctx context.Context, key string, execute func(context.Context) error) error {
 	return adapter.inner.Do(ctx, key, execute)
 }

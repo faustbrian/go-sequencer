@@ -66,7 +66,7 @@ global runtime.
 | Package | Use it for |
 | --- | --- |
 | `sequencer` | Immutable dependency plans, fenced durable attempts, synchronous runs, fleet execution, and reconciliation |
-| `memory` | Deterministic process-local storage, leases, and queues for tests or non-durable work |
+| `memory` | Deterministic process-local ledger and lease bookkeeping for tests or non-durable work |
 | `postgres` | Durable fenced state using a caller-owned PostgreSQL pool |
 | `migrations` | Checking application-owned schema migration prerequisites |
 | `scheduler` | Sending absolute future-eligibility requests to an application-owned scheduler |
@@ -91,12 +91,16 @@ effects.
 `CompilePlan` validates and freezes definitions before work starts. `Runner`
 executes synchronously. `Fleet` owns its bounded polling and lease-renewal
 goroutines; cancel its `Run` context to begin draining and let the configured
-shutdown wait bound graceful draining and the `Run` call. An uncooperative
-handler may continue after an operation or shutdown deadline, but a fleet
-fails closed without replacing its retained execution slot until the process
+shutdown wait bound drain waits and provider-call contexts. Providers must honor
+those contexts; renewal joins cannot hard-bound the `Run` call if a store blocks.
+An uncooperative handler may continue after an operation or shutdown deadline,
+but a fleet fails closed without replacing its retained execution slot until
+the process
 manager terminates it. Constructors borrow stores and other injected
 collaborators, so callers must keep them valid, synchronize mutable state, and
-close owned resources after execution has stopped.
+close owned resources only after their users have stopped. Observer workers have
+no join or flush API and may outlive `Execute` or `Run`; borrowed observers must
+remain valid through their delivery work.
 
 Handlers receive a context and a fenced attempt. Typed failures preserve their
 in-process causes, while only redaction-safe classifications enter durable

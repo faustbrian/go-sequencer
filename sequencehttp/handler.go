@@ -1,5 +1,10 @@
 // Package sequencehttp provides bounded administrative controls. Applications
 // must supply authentication and authorization; this package provides none.
+//
+// Only single-segment operation IDs are routable: slash is rejected even though
+// the root OperationID grammar permits it. Bodies for reset/reconcile are limited
+// to 8 KiB and one JSON value with unknown fields rejected; execution is synchronous.
+// Controllers and authorizers are borrowed and must support concurrent requests.
 package sequencehttp
 
 import (
@@ -40,10 +45,14 @@ const (
 
 // ResetRequest contains attributable administrative replay metadata.
 type ResetRequest struct {
+	// OperationID is replaced by the validated URL resource before controller dispatch.
 	OperationID string `json:"operation_id"`
-	Version     uint   `json:"version"`
-	Actor       string `json:"actor"`
-	Reason      string `json:"reason"`
+	// Version selects the nonzero exact definition.
+	Version uint `json:"version"`
+	// Actor must exactly match the authorized principal; the handler replaces it with that principal.
+	Actor string `json:"actor"`
+	// Reason is required and at most DefaultMaxReasonBytes; the controller owns audit persistence.
+	Reason string `json:"reason"`
 }
 
 // Inspection is one pre-encoded JSON administrative response. Controllers
@@ -54,9 +63,15 @@ type Inspection []byte
 // pre-encoded UTF-8 JSON so the handler can reject oversized results before
 // parsing or copying them.
 type Controller interface {
+	// Inspect returns nonempty, valid UTF-8 JSON at most MaxResponseBytes.
+	// The controller must keep its bytes unchanged until request handling returns.
 	Inspect(context.Context, string, uint) (Inspection, error)
+	// Execute completes its synchronous action before the handler returns HTTP 202;
+	// the status does not describe a separate asynchronous job.
 	Execute(context.Context) error
+	// Reset owns replay validation and attributable persistence for the URL-bound identity.
 	Reset(context.Context, ResetRequest) error
+	// Reconcile owns exact unknown-attempt resolution; the handler supplies wall-clock UTC time.
 	Reconcile(context.Context, sequencer.ReconcileRequest) error
 }
 
@@ -64,17 +79,21 @@ type Controller interface {
 // returns the stable, non-empty principal that was authenticated and
 // authorized for the action and resource.
 type Authorizer interface {
+	// Authorize authenticates and authorizes this action/resource, returning a nonempty
+	// principal of at most DefaultMaxActorBytes. Execute uses an empty resource.
 	Authorize(context.Context, Action, string) (string, error)
 }
 
-// Handler exposes inspect, execute, and reset controls.
+// Handler exposes fixed inspect, execute, reset and reconciliation controls.
+// It retains borrowed collaborators; the zero Handler is not usable.
 type Handler struct {
 	controller Controller
 	authorizer Authorizer
 }
 
-// New constructs a handler that denies no request implicitly: an explicit
-// application authorizer is mandatory.
+// New requires non-nil controller and authorizer interfaces. Each supported
+// action is authorized explicitly; typed-nil implementations are not detected.
+// Construction installs no server, authentication middleware or background work.
 func New(controller Controller, authorizer Authorizer) (*Handler, error) {
 	if controller == nil || authorizer == nil {
 		return nil, ErrInvalidHandler
@@ -82,7 +101,10 @@ func New(controller Controller, authorizer Authorizer) (*Handler, error) {
 	return &Handler{controller: controller, authorizer: authorizer}, nil
 }
 
-// ServeHTTP dispatches the small fixed administrative surface.
+// ServeHTTP authorizes and dispatches the fixed method/path surface. Controllers
+// run synchronously on the request context, and error bodies are generic JSON.
+// Valid Inspection bytes are written unchanged; write errors are not propagated.
+// Unknown routes are 404. It supplies neither CSRF nor transport security.
 func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	switch {
 	case request.Method == http.MethodPost && request.URL.Path == "/execute":

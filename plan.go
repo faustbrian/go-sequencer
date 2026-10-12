@@ -8,17 +8,26 @@ import (
 
 // PlanOptions contains explicit graph resource bounds.
 type PlanOptions struct {
+	// MaxOperations limits input definitions; zero selects DefaultMaxOperations, negative is invalid.
 	MaxOperations int
-	MaxDepth      int
+	// MaxDepth limits recursive dependency visits starting at depth one;
+	// zero selects DefaultMaxGraphDepth, negative is invalid.
+	MaxDepth int
 }
 
-// Plan is an immutable, deterministic topological execution plan.
+// Plan is immutable dependency-first metadata; callback collaborators remain borrowed.
+// Read methods may be used concurrently, but collaborators need their own synchronization.
+// Use CompilePlan; a nil Plan is not supported.
 type Plan struct {
 	operations []Operation
 	byID       map[OperationID]Operation
 }
 
-// CompilePlan validates and freezes a complete operation graph.
+// CompilePlan copies and validates a complete graph, rejecting duplicate IDs,
+// missing or mismatched exact dependencies, cycles and resource-limit violations.
+// Sorted IDs and sorted dependency visits produce deterministic depth-first,
+// dependency-first order, not a globally lexicographically smallest ready-node order.
+// Empty input is valid; errors return no partial Plan.
 func CompilePlan(specs []OperationSpec, options PlanOptions) (*Plan, error) {
 	if options.MaxOperations < 0 || options.MaxDepth < 0 {
 		return nil, ErrResourceLimit
@@ -107,7 +116,8 @@ func (plan *Plan) IDs() []OperationID {
 	return ids
 }
 
-// Operations returns defensive copies in deterministic execution order.
+// Operations copies definition metadata in deterministic execution order;
+// handlers and conditions remain borrowed.
 func (plan *Plan) Operations() []Operation {
 	operations := make([]Operation, len(plan.operations))
 	for index, operation := range plan.operations {
@@ -116,7 +126,8 @@ func (plan *Plan) Operations() []Operation {
 	return operations
 }
 
-// Operation returns a defensive copy by stable identifier.
+// Operation copies definition metadata by ID; handlers and conditions remain borrowed.
+// A missing ID returns the zero Operation and false.
 func (plan *Plan) Operation(id OperationID) (Operation, bool) {
 	operation, ok := plan.byID[id]
 	return Operation{spec: cloneSpec(operation.spec)}, ok

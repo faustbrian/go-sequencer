@@ -29,11 +29,17 @@ through pre-handler work, callback cancellation acknowledgement, and bounded
 settlement. An initial renewal proves ownership before callback admission.
 Synchronous runners now require `LeaseStore` capability. Store implementations
 must honor their supplied contexts; renewal loss cancels execution and settlement
-and fails closed. Every keeper stops boundedly after settlement; an unresponsive
-callback never receives indefinite lease renewal or a replacement execution slot.
+and fails closed. Keeper stop requests and provider calls carry bounded deadlines;
+providers must honor them, because Go cannot force a blocked store method to return.
+Fleet Run joins renewal workers and therefore is not a hard wall-clock shutdown
+bound when a provider ignores cancellation. An unresponsive callback never
+receives indefinite lease renewal or a replacement execution slot.
 Fleet attempts retain exactly their own keeper, without a second renewal worker.
 Observer enqueue and drop never wait for callback delivery; consumers needing
 an observation must synchronize explicitly with its asynchronous delivery.
+Observer workers have no flush or join API and a blocking callback can outlive
+Execute or Run. Fleet attempts use detached background contexts, not Run context
+values; cooperative cancellation is delivered separately during drain.
 `rolled_back` is a legacy readable state;
 current compensation is a separate operation and never means the database
 returned to a historical snapshot.

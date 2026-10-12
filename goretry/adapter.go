@@ -1,4 +1,6 @@
 // Package goretry provides the retained Sequencer retry adapter.
+// Named facade types remain distinct from canonical adapter types; values are
+// bridged while sentinels, defaults and runtime semantics are preserved.
 //
 // Deprecated: use github.com/faustbrian/go-sequencer/v2/adapters/retry. This
 // package remains supported for the longer of 180 days after successor public
@@ -35,6 +37,9 @@ func (Classifier) Classify(err error) Classification {
 
 // Policy executes a callback under explicit attempt and time budgets.
 type Policy interface {
+	// Do owns the only retry loop and must bound time, honor cancellation and
+	// apply the typed failure classifier. The adapter bounds callback reservations,
+	// not how long a policy can block or how it schedules those callbacks.
 	Do(context.Context, func(context.Context) error) error
 }
 

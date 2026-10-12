@@ -25,7 +25,11 @@ attempt, and audit writes.
 
 `adapters/idempotency` terminal updates and `adapters/lease` releases detach
 from caller cancellation so accepted cleanup still runs, but every call
-retains an explicit deadline. `New` uses a five-second bound;
+retains an explicit deadline which providers must honor. The idempotency adapter
+does not catch callback panics or perform a terminal update while unwinding one;
+reconcile that accepted token if an outer runner recovers the panic. The lease
+adapter defers release even on panic, but neither renews the acquired lease nor
+forcibly stops a callback on TTL expiry. `New` uses a five-second bound;
 `NewWithCleanupTimeout` accepts a
 positive bound up to one minute. Cleanup failures retain their underlying cause
 and any primary execution failure, but also carry `ErrUnknownResult`; callers

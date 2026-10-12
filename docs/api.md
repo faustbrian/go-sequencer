@@ -14,7 +14,9 @@ bytes; tag and environment collections are each limited to 64 entries.
 
 `CompilePlan` rejects invalid definitions, duplicates, missing dependencies,
 cycles, and resource-limit violations. `Plan.IDs`, `Plan.Operations`, and
-`Plan.Operation` return defensive copies in deterministic order.
+`Plan.Operation` return copied metadata (lookup is by ID, not an ordering surface).
+Handlers and conditions remain borrowed collaborators; checksums validate declared
+identity syntax, not handler source authenticity.
 
 `NewRunner` requires fenced `LeaseStore` renewal even though its parameter retains
 the historical `Store` signature; nonrenewable stores fail before registration
@@ -27,9 +29,10 @@ is panic-isolated, and receives only stable error classifications.
 post-cancellation acknowledgement window; zero selects the documented
 `DefaultHandlerStopWait`. Callers own
 those collaborators and their cleanup, must keep them valid while `Execute`
-or `Run` is active, and must synchronize any mutable collaborator state for
-every documented concurrent call. In particular, a fleet may invoke handlers
-and observers concurrently. Construction defensively copies operation
+or `Run` is active and through any retained callback/observer work, and must
+synchronize mutable collaborator state for every documented concurrent call.
+In particular, a fleet may invoke handlers and observers concurrently.
+Construction defensively copies operation
 definitions and the channels and observers slices, so later mutation of those
 caller-owned slices does not change the compiled plan or runner configuration.
 
@@ -95,8 +98,9 @@ full-width fencing proof, `succeeded`, `retry`, or `failed` resolution, actor,
 and reason. Principals and actors are limited to 255 bytes and reasons to 4 KiB.
 The actor must exactly match the authorized principal; the handler adds server
 time and passes a root `ReconcileRequest` to the controller. Operation path
-resources must satisfy the lowercase 255-byte identifier grammar before
-authorization is invoked.
+resources must satisfy the lowercase 255-byte identifier grammar and contain
+no slash before authorization is invoked. Root operations may contain slashes,
+but this single-segment HTTP surface cannot address them.
 
 `sequencehttp.Controller.Inspect` returns a pre-encoded UTF-8 JSON `Inspection`.
 The handler rejects empty, oversized, non-UTF-8, or invalid JSON results before

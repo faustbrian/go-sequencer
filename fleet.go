@@ -22,7 +22,8 @@ const (
 	DefaultClaimInterval = time.Second
 	// DefaultRenewInterval bounds how often owned leases are renewed.
 	DefaultRenewInterval = DefaultLeaseDuration / 3
-	// DefaultShutdownWait bounds graceful drain before the runner reports failure.
+	// DefaultShutdownWait is the default drain wait and provider-call deadline.
+	// Uncooperative providers or callbacks cannot be forcibly joined within it.
 	DefaultShutdownWait = 30 * time.Second
 	// DefaultMaxConcurrency bounds simultaneous accepted attempts per runner.
 	DefaultMaxConcurrency = 1
@@ -30,7 +31,8 @@ const (
 	MaxFleetConcurrency = 1_024
 	// MaxClaimInterval keeps loss-of-readiness and recovery polling observable.
 	MaxClaimInterval = time.Minute
-	// MaxShutdownWait caps graceful termination within an operationally finite bound.
+	// MaxShutdownWait caps the configured drain and provider-call deadline,
+	// not the wall-clock lifetime of uncooperative application code.
 	MaxShutdownWait = 30 * time.Minute
 )
 
@@ -44,7 +46,8 @@ const (
 	RunnerAccepting
 	// RunnerDraining has stopped claiming and is settling accepted attempts.
 	RunnerDraining
-	// RunnerStopped has settled all accepted attempts and owns no workers.
+	// RunnerStopped has joined accepted fleet workers and stopped lease renewal.
+	// It does not join observer delivery or arbitrary retained application callbacks.
 	RunnerStopped
 	// RunnerFailed stopped accepting because a lifecycle or durability boundary failed.
 	RunnerFailed
@@ -69,15 +72,25 @@ func (state RunnerState) String() string {
 // FleetOptions configures one explicitly owned long-running runner lifecycle.
 type FleetOptions struct {
 	RunnerOptions
-	ClaimInterval  time.Duration
-	RenewInterval  time.Duration
+	// ClaimInterval is the idle polling interval; zero selects DefaultClaimInterval,
+	// and values above MaxClaimInterval are rejected.
+	ClaimInterval time.Duration
+	// RenewInterval is positive and strictly shorter than LeaseDuration;
+	// zero selects one third of the configured lease.
+	RenewInterval time.Duration
+	// MaxConcurrency limits accepted attempts and callback slots; zero selects
+	// DefaultMaxConcurrency and values above MaxFleetConcurrency are rejected.
 	MaxConcurrency uint
-	ShutdownWait   time.Duration
+	// ShutdownWait bounds drain waits and individual provider calls; zero selects
+	// DefaultShutdownWait. It cannot force a provider or callback to return.
+	ShutdownWait time.Duration
 }
 
-// Fleet claims locally registered operations without a leader. A stopped Run
-// owns no polling or renewal goroutines. A cancellation-ignoring callback may
-// retain its execution goroutine; the process manager must terminate it.
+// Fleet claims locally registered operations without a leader and permits only
+// one Run call in its lifetime. Run joins its polling, accepted workers and
+// renewal workers; providers must honor contexts for that join to finish.
+// Cancellation-ignoring callbacks can retain quarantined execution goroutines,
+// and observer workers are not joined. The application owns process supervision.
 type Fleet struct {
 	plan         *Plan
 	store        LeaseStore
@@ -140,15 +153,16 @@ func NewFleet(plan *Plan, store LeaseStore, options FleetOptions) (*Fleet, error
 	}, nil
 }
 
-// State returns the current observable lifecycle state.
+// State returns a synchronized lifecycle snapshot, which may change immediately.
+// A nil Fleet is not supported.
 func (fleet *Fleet) State() RunnerState {
 	fleet.mu.RLock()
 	defer fleet.mu.RUnlock()
 	return fleet.state
 }
 
-// Ready reports whether Kubernetes may route work to this runner. Draining,
-// stopped, and failed runners are never ready and cannot initiate new claims.
+// Ready reports only whether the local lifecycle is accepting claims.
+// It is not a distributed health, authentication or future admission guarantee.
 func (fleet *Fleet) Ready() bool { return fleet.State() == RunnerAccepting }
 
 func (fleet *Fleet) setState(state RunnerState) {
@@ -174,8 +188,12 @@ func (fleet *Fleet) beginRun() bool {
 }
 
 // Run registers the local binary plan, accepts leaderless claims, and drains
-// accepted work after cancellation. Cancellation is treated as SIGTERM: the
-// accepting state ends before attempt contexts are canceled.
+// accepted work after cancellation. A second call returns ErrInvalidTransition;
+// the Fleet cannot be restarted. Admission closes before cooperative attempt
+// cancellation. Accepted attempts use detached background contexts, not Run
+// values; drain-only attempts retain their deadline without shutdown cancellation.
+// Provider context cooperation is required for renewal joins to finish, so
+// ShutdownWait cannot guarantee a hard wall-clock return bound.
 func (fleet *Fleet) Run(ctx context.Context) error {
 	if !fleet.beginRun() {
 		return ErrInvalidTransition

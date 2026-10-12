@@ -1,5 +1,8 @@
 // Package scheduler bridges explicit future eligibility to an application
 // scheduler without starting an implicit scheduler or goroutine.
+//
+// The borrowed Destination owns admission, persistence and cancellation. Defer
+// accepts a past nonzero instant as well as a future one; it never edits the ledger.
 package scheduler
 
 import (
@@ -15,13 +18,18 @@ var ErrInvalidAdapter = errors.New("sequencer/scheduler: invalid adapter")
 
 // Request is a payload-free future eligibility command.
 type Request struct {
+	// OperationID is the valid operation identity.
 	OperationID sequencer.OperationID
-	Version     uint
-	EligibleAt  time.Time
+	// Version is its exact nonzero version.
+	Version uint
+	// EligibleAt is a nonzero absolute instant; past instants are permitted.
+	EligibleAt time.Time
 }
 
 // Destination is implemented by a scheduler integration owned by the app.
 type Destination interface {
+	// Schedule owns persistence, admission and deduplication of the command.
+	// The adapter does not update the ledger, start timers or make enqueue atomic.
 	Schedule(context.Context, Request) error
 }
 

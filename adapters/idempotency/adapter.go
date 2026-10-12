@@ -1,5 +1,9 @@
 // Package sequenceridempotency bridges explicitly idempotent operations to a durable
 // idempotency service without hiding availability or replay decisions.
+//
+// The application owns key scope, durable token semantics and the borrowed Gate.
+// Calls require a non-nil context and cooperative providers; this adapter does
+// not make arbitrary effects idempotent, recover callback panics or close clients.
 package sequenceridempotency
 
 import (
@@ -25,8 +29,14 @@ type Token any
 
 // Gate is the narrow seam implemented by a fail-closed idempotency wrapper.
 type Gate interface {
+	// Begin returns ownership and whether to execute; false with nil error skips work.
+	// A true decision must supply a non-nil token and protect the logical effect durably.
 	Begin(context.Context, string) (Token, bool, error)
+	// Complete confirms the effect succeeded under the accepted token.
+	// It must honor the detached cleanup deadline.
 	Complete(context.Context, Token) error
+	// Fail records the callback failure under the accepted token; it must not
+	// authorize unsafe replay of an effect with an unknown outcome.
 	Fail(context.Context, Token, error) error
 }
 
@@ -50,10 +60,14 @@ func NewWithCleanupTimeout(gate Gate, cleanupTimeout time.Duration) (*Adapter, e
 }
 
 // Do runs only newly acquired work and records its terminal result.
+// Cleanup uses a cancellation-detached deadline; cleanup error carries ErrUnknownResult.
+// A callback panic is not recovered and does not call Complete or Fail.
 func (adapter *Adapter) Do(ctx context.Context, key string, execute func(context.Context) error) error {
 	if key == "" || execute == nil {
 		return ErrInvalidAdapter
 	}
+	// Terminal updates follow returned callback outcomes, not panic unwinding.
+	// A caller recovering a panic must reconcile the accepted token itself.
 	token, shouldExecute, err := adapter.gate.Begin(ctx, key)
 	if err != nil || !shouldExecute {
 		return err

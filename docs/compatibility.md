@@ -49,9 +49,9 @@ consumer before delivery is complete. Secret scanning uses the authenticated,
 checksum-pinned go-library-tools v2.1.3 contract; local results do not establish
 hosted CI or publication.
 
-Ledger migrations are versioned and reversible for development. Production
-rollback must account for retained history and must never drop tables merely to
-roll back application code.
+Embedded ledger migrations are versioned and forward-only: their Down sections
+retain history rather than reverse the schema. Application rollback must account
+for retained history and must never drop tables merely to roll back code.
 
 Rolling binaries use exact `ClaimCandidate` values. The legacy ID-only claim
 surface selects the latest version and is suitable only when every claimant has

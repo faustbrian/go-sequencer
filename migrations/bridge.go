@@ -1,5 +1,8 @@
 // Package migrations asserts schema prerequisites without owning migration
 // discovery, planning, execution, or history.
+//
+// The borrowed VersionReader defines the numeric version scheme and cancellation
+// semantics; asserting a lower bound does not lock or execute any schema changes.
 package migrations
 
 import (
@@ -17,11 +20,16 @@ var (
 
 // VersionReader exposes the application migration engine's current version.
 type VersionReader interface {
+	// CurrentVersion returns the application migration version; the bridge neither
+	// reads migration history nor executes migrations, and propagates reader errors.
 	CurrentVersion(context.Context) (uint64, error)
 }
 
 // Prerequisite declares the minimum schema version an operation needs.
-type Prerequisite struct{ MinimumVersion uint64 }
+type Prerequisite struct {
+	// MinimumVersion is a nonzero numerical lower bound in the application version scheme.
+	MinimumVersion uint64
+}
 
 // Bridge checks prerequisites while leaving migration history untouched.
 type Bridge struct{ reader VersionReader }

@@ -1,4 +1,9 @@
 // Package memory provides a concurrency-safe deterministic sequencer store.
+//
+// It is process-local: restart loses all history and ownership. Caller-supplied
+// instants govern eligibility and expiry; contexts are checked before mutex
+// acquisition, not while waiting for it. Methods copy collections on store/read
+// boundaries. Use New: the zero Store has uninitialized maps and is not writable.
 package memory
 
 import (
@@ -26,7 +31,8 @@ type entry struct {
 	audit               []sequencer.AuditEvent
 }
 
-// Store is a mutex-serialized reference implementation suitable for tests.
+// Store is a mutex-serialized in-memory ledger suitable for tests, not restart durability.
+// It must not be copied after use; histories are retained without automatic eviction.
 type Store struct {
 	mu                  sync.Mutex
 	entries             map[key]*entry
@@ -164,7 +170,9 @@ func ownershipValid(ownership sequencer.Ownership) bool {
 		len(ownership.Owner) <= sequencer.DefaultMaxActorBytes
 }
 
-// ClaimNext atomically claims the first dependency-ready operation.
+// ClaimNext serializes selection in request order, using request.Now for eligibility
+// and expiry. Version zero selects the latest definition; exact candidates avoid
+// mixed-binary drift. Attempt, replay and fencing counters fail before uint overflow.
 func (store *Store) ClaimNext(ctx context.Context, request sequencer.ClaimRequest) (sequencer.Claim, error) {
 	if err := ctx.Err(); err != nil {
 		return sequencer.Claim{}, err
@@ -448,7 +456,8 @@ func (store *Store) Snapshot(ctx context.Context, id sequencer.OperationID, vers
 	return cloneRecord(current.record), nil
 }
 
-// History returns bounded attempt records in execution order.
+// History copies the latest limit attempts in ascending order, including output maps.
+// A missing definition is ErrNotFound; limit must be in [1, DefaultMaxHistory].
 func (store *Store) History(ctx context.Context, id sequencer.OperationID, version uint, limit int) ([]sequencer.AttemptRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -470,7 +479,8 @@ func (store *Store) History(ctx context.Context, id sequencer.OperationID, versi
 	return result, nil
 }
 
-// Audit returns bounded append-only events in occurrence order.
+// Audit copies the latest limit append-only events in occurrence order.
+// A missing definition is ErrNotFound; limit must be in [1, DefaultMaxHistory].
 func (store *Store) Audit(ctx context.Context, id sequencer.OperationID, version uint, limit int) ([]sequencer.AuditEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

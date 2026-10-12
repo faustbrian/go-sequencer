@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Documentation
+
+- Clarify copied metadata versus borrowed callbacks, fenced ownership and
+  transaction gaps, provider time/lease limits, asynchronous observer lifetime,
+  adapter cleanup and replay obligations, forward-only migrations, and the
+  single-segment administrative HTTP resource boundary.
+
 ## 2.0.2 - 2026-10-07
 
 ### Maintenance

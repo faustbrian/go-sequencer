@@ -1,5 +1,9 @@
 // Package sequencerretry maps typed sequencer failures to a bounded retry policy such
 // as retry while leaving durable attempt ownership with the sequencer.
+//
+// Use only with InlineRetries and Attempt.Budget. Policy owns scheduling, time
+// bounds, cancellation and classification; the adapter enforces callback count.
+// Construction starts no work and borrows the policy without closing it.
 package sequencerretry
 
 import (
@@ -35,6 +39,9 @@ func (Classifier) Classify(err error) Classification {
 
 // Policy executes a callback under explicit attempt and time budgets.
 type Policy interface {
+	// Do owns the only retry loop and must bound time, honor cancellation and
+	// apply the typed failure classifier. The adapter bounds callback reservations,
+	// not how long a policy can block or how it schedules those callbacks.
 	Do(context.Context, func(context.Context) error) error
 }
 

@@ -23,7 +23,8 @@ func NewExecutionBudget(limit uint) (*ExecutionBudget, error) {
 	return &ExecutionBudget{limit: uint64(limit)}, nil
 }
 
-// Take reserves one execution or reports that the shared bound is exhausted.
+// Take atomically reserves one execution, without refund, or returns ErrBudgetExhausted.
+// Nil and zero-value budgets are exhausted; reservation does not bound callback duration.
 func (budget *ExecutionBudget) Take() error {
 	if budget == nil {
 		return ErrBudgetExhausted
@@ -39,7 +40,8 @@ func (budget *ExecutionBudget) Take() error {
 	}
 }
 
-// Remaining returns the number of callback executions still available.
+// Remaining reports the current unreserved count, or zero for a nil budget.
+// Concurrent Take calls may change it immediately; use Take to admit work.
 func (budget *ExecutionBudget) Remaining() uint {
 	if budget == nil {
 		return 0

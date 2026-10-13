@@ -120,7 +120,7 @@ and [Persistence and durability family](https://github.com/faustbrian/go-library
 describe the shared design language, related packages, and composition rules.
 
 The [API guide](docs/api.md), [cookbook](docs/cookbook.md),
-[`sequencertest`](https://pkg.go.dev/github.com/faustbrian/go-sequencer/sequencertest),
+[`sequencertest`](https://pkg.go.dev/github.com/faustbrian/go-sequencer/v2/sequencertest),
 [FAQ](docs/faq.md), [operations guide](docs/operations.md),
 [compatibility notes](docs/compatibility.md), [changelog](CHANGELOG.md),
 [support policy](SUPPORT.md), [security policy](SECURITY.md), and

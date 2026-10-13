@@ -1,5 +1,7 @@
 # Source documentation audit
 
+[Documentation index](README.md)
+
 ## Scope and initial contract plan
 
 Tier A source documentation only from `f5f4d9bf4b4d1f3125735af36dbcf0c581be8d2a`.
@@ -213,3 +215,5 @@ routes. Ordinary shared CI selects strict source-documentation checking and
 requires its result. Native prerequisites, operation budgets, security and
 release controls are retained. Hosted exact-head evidence is recorded by the
 coordination ledger; configuration alone does not establish green delivery.
+
+Continue with [API](api.md).

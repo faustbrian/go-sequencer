@@ -1,5 +1,7 @@
 # Threat model
 
+[Documentation index](../README.md)
+
 Version: 2.0.0 candidate, reviewed for the security release on 2026-09-27.
 Publication, required main CI, and public-consumer verification remain separate
 delivery boundaries; this model does not claim they have passed.
@@ -63,3 +65,5 @@ Security-sensitive changes exercise focused deadline, panic, redaction,
 resource-bound, checksum, race, leak, store-integration, API-compatibility,
 static-analysis, vulnerability, and secret-scanning checks according to the
 affected boundary.
+
+Continue with [Operations guide](../operations.md).

@@ -1,5 +1,7 @@
 # Kubernetes fleet operation
 
+[Documentation index](README.md)
+
 ## Ownership model
 
 Run one `Fleet` per pod with an owner value unique to that pod instance.
@@ -128,3 +130,5 @@ external system's idempotency record, and application evidence. Resolve that
 exact attempt and fencing token as succeeded, failed, or eligible for retry.
 Generic reset cannot resolve it. Never infer success from lease release, pod
 deletion, queue acknowledgement, or Kubernetes job completion alone.
+
+Continue with [API](api.md).

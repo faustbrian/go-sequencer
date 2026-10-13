@@ -1,5 +1,7 @@
 # Compatibility
 
+[Documentation index](README.md)
+
 The published v2 module requires Go 1.27.0 or later. V2.0.0 established the
 stable `/v2` module path; v1 remains available from the module path without
 that suffix.
@@ -95,3 +97,5 @@ a legacy named type.
 argument. Inline-retry handlers must pass that budget through rather than
 constructing an adapter-local retry count; durable-retry handlers should not
 call the inline adapter.
+
+Continue with [API](api.md).

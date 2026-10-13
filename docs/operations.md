@@ -1,5 +1,7 @@
 # Operations guide
 
+[Documentation index](README.md)
+
 Monitor counts by state, oldest eligible age, active lease age, retry volume,
 indeterminate and dead-lettered results, blocked or canceled operations,
 definition drift, and partial reports. Alert on expired running attempts,
@@ -21,3 +23,5 @@ retry with broader identity.
 Retention must preserve the current projection and the audit period required
 by the application. Archive before pruning. Inspection requests are bounded to
 10,000 records and administrative endpoints should add tighter product limits.
+
+Continue with [API](api.md).

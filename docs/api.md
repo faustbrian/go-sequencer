@@ -1,5 +1,7 @@
 # API
 
+[Documentation index](README.md)
+
 `OperationSpec` contains stable identity, version, a canonical lowercase
 `sha256:` checksum, description, tags,
 channel, exact dependency references, environments, execution policy, an
@@ -106,3 +108,5 @@ but this single-segment HTTP surface cannot address them.
 The handler rejects empty, oversized, non-UTF-8, or invalid JSON results before
 writing a response; controllers retain the bytes and must not mutate
 them until request handling returns.
+
+Continue with [Quickstart](quickstart.md).

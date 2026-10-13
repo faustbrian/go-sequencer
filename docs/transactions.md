@@ -1,5 +1,7 @@
 # Transactions
 
+[Documentation index](README.md)
+
 `WithinTransaction` means one worker attempt executes inside one local
 transaction supplied by `TransactionManager`. The handler receives that
 transaction through `Attempt.Transaction`; the sequencer never discovers a
@@ -24,3 +26,5 @@ An asynchronous operation cannot share a live transaction with the enqueueing
 process, its ledger claim or completion, or later operations. Use an
 application outbox when enqueue must follow application data atomically.
 Cross-process and cross-operation atomicity are never claimed.
+
+Continue with [API](api.md).

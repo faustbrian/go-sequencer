@@ -1,5 +1,7 @@
 # Migrating Laravel one-time operations
 
+[Documentation index](README.md)
+
 Inventory every Laravel or Cline Sequencer operation with its historical name,
 execution evidence, dependencies, transaction assumptions, retries, and side
 effects. Preserve the old identifier in tags or audit metadata.
@@ -13,3 +15,5 @@ Import successful historical operations into the ledger through a reviewed
 application migration or baseline tool. Never replay them merely because the
 new ledger starts empty. Verify Postal and Location histories before switching
 deployment control to Go.
+
+Continue with [API](api.md).

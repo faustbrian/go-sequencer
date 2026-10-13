@@ -1,5 +1,7 @@
 # Rollback and compensation
 
+[Documentation index](README.md)
+
 Rollback handlers are compensating business operations. They cannot undo an
 email, external API call, consumed queue message, or committed database write.
 Never describe them as database time travel.
@@ -27,3 +29,5 @@ version for a later forward generation.
 `rolled_back` remains readable for legacy ledgers, but no current state
 transition enters it. New compensation must be represented by a separate
 operation.
+
+Continue with [API](api.md).

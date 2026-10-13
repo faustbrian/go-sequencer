@@ -1,5 +1,7 @@
 # Documentation
 
+[Package README](../README.md)
+
 - [API](api.md)
 - [Quickstart](quickstart.md)
 - [Operation lifecycle](lifecycle.md)
@@ -24,3 +26,12 @@
 The repository [README](../README.md#packages) maps every public package and
 explains when to choose Sequencer instead of Scheduler. Start with the
 self-contained quick start before selecting production stores or adapters.
+
+## Ecosystem navigation
+
+See the [versioned Golib ecosystem index](https://github.com/faustbrian/go-library-tools/blob/v1.8.4/docs/ecosystem/README.md) for package
+selection, explicit ownership, and compatibility guidance.
+
+## Additional guides and reference
+
+- [Source documentation audit](source-documentation-audit.md)

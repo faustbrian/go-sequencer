@@ -1,5 +1,7 @@
 # Asynchronous execution
 
+[Documentation index](README.md)
+
 `adapters/queue.Dispatcher` publishes operation ID, version, checksum, and a
 delivery identity. It does not serialize handler payloads, dependencies,
 transactions, or secrets. Operation IDs use the 255-byte sequencer identifier grammar;
@@ -27,3 +29,5 @@ not infer settlement from the returned error alone.
 Enqueue success only proves durable queue admission. Worker success is a later
 transaction. Use an application outbox when enqueue must follow another local
 database write atomically.
+
+Continue with [API](api.md).

@@ -1,5 +1,7 @@
 # Performance
 
+[Documentation index](README.md)
+
 Planning is proportional to operations plus dependency edges, with sorting for
 stable tie-breaking. The default limits are 10,000 operations, 256 direct
 dependencies, and depth 1,024.
@@ -72,3 +74,5 @@ Record the image digest, Docker or container runtime version, host resources,
 pool settings, database settings, and whether the database was local or remote.
 These workloads compare identical revisions and environments; they intentionally
 define no flaky wall-clock pass/fail threshold.
+
+Continue with [API](api.md).

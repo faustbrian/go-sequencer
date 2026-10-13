@@ -1,5 +1,7 @@
 # Retries and dead letters
 
+[Documentation index](README.md)
+
 Every policy declares finite maximum attempts, maximum exceptions, and a
 timeout. Only `sequencer.Retry` permits another durable attempt. Untyped errors
 and `sequencer.Permanent` fail immediately. Cancellation and deadline outcomes
@@ -48,3 +50,5 @@ operator-visible, never deleted, and never replayed automatically. An
 attributed reset or new version is required to try it again. `AllowedFailure`
 may make the aggregate report partial, but it does not hide or change the
 durable dead-letter state.
+
+Continue with [API](api.md).

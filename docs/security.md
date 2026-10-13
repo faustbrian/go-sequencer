@@ -1,5 +1,7 @@
 # Security
 
+[Documentation index](README.md)
+
 Operation source and canonical lowercase SHA-256 checksums are deployment-controlled code. Never accept
 arbitrary operation definitions, handler names, dependencies, or reset commands
 from an unauthenticated request. Plan and direct-store validation still bounds
@@ -32,3 +34,5 @@ idempotency boundary protects the effect. Reconciliation is an administrative
 authorization: bind it to the exact version, attempt, and fencing token;
 require a bounded authenticated actor and reason; and reject stale timestamps.
 Do not use generic reset to bypass an indeterminate result.
+
+Continue with [Operations guide](operations.md).

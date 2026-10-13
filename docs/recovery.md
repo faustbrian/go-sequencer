@@ -1,5 +1,7 @@
 # Crash recovery
 
+[Documentation index](README.md)
+
 Recovery uses durable lease expiry and attempt state, never process memory.
 An expired claimed or running attempt is recorded as `indeterminate` with an
 unknown result. The default `UnknownOutcomeBlock` policy leaves it unclaimable;
@@ -58,3 +60,5 @@ exact reconciliation authorizes replay, the next claim increments the attempt
 and fencing token so an old completion remains stale. Renewal extends ownership
 only; stopping renewal or clearing a completed lease never asserts that an
 uncooperative external effect stopped.
+
+Continue with [API](api.md).

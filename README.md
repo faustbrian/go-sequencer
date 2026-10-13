@@ -2,10 +2,9 @@
 
 [![CI](https://github.com/faustbrian/go-sequencer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/faustbrian/go-sequencer/actions/workflows/ci.yml)
 [![CodeQL](https://img.shields.io/badge/CodeQL-required-blue)](https://github.com/faustbrian/go-sequencer/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-100%25_required-blue)](CONTRIBUTING.md#verification)
 [![Mutation](https://img.shields.io/badge/mutation-local_and_scheduled-blue)](CONTRIBUTING.md#verification)
-[![Documentation](https://img.shields.io/badge/docs-checked_in_CI-blue)](docs/)
-[![Go Reference](https://pkg.go.dev/badge/github.com/faustbrian/go-sequencer.svg)](https://pkg.go.dev/github.com/faustbrian/go-sequencer)
+[![Documentation](https://img.shields.io/badge/docs-structural_checks_in_CI-blue)](docs/)
+[![Go Reference](https://pkg.go.dev/badge/github.com/faustbrian/go-sequencer/v2.svg)](https://pkg.go.dev/github.com/faustbrian/go-sequencer/v2)
 [![Release](https://img.shields.io/github/v/release/faustbrian/go-sequencer?sort=semver)](https://github.com/faustbrian/go-sequencer/releases)
 [![Go](https://img.shields.io/badge/go-1.27.0-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -27,16 +26,16 @@ The published v2 module requires Go 1.27.0 or later. V2.0.0 established the
 
 ## Install
 
-Install the released v1 module:
+Install the current released v2 module:
 
 ```sh
-go get github.com/faustbrian/go-sequencer
+go get github.com/faustbrian/go-sequencer/v2@v2
 ```
 
-Install the released v2 module with:
+Existing v1 consumers can retain the historical module while planning migration:
 
 ```sh
-go get github.com/faustbrian/go-sequencer/v2
+go get github.com/faustbrian/go-sequencer@v1
 ```
 
 Read the [compatibility guide](docs/compatibility.md) before moving existing

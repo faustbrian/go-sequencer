@@ -1,5 +1,7 @@
 # Quickstart
 
+[Documentation index](README.md)
+
 Install the published v2.0.0 module with:
 
 ```sh
@@ -89,3 +91,5 @@ bounded context, and retain and alert on the complete report.
 
 Use `memory.New()` and `sequencertest.NewClock` for deterministic tests. Never
 use the memory adapter as a multi-process production ledger.
+
+Continue with [API](api.md).

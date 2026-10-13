@@ -1,5 +1,7 @@
 # Ordering
 
+[Documentation index](README.md)
+
 The planner uses dependency edges, not source-file order. It performs a
 deterministic dependency-first depth-first traversal of sorted operation IDs and
 sorted dependency IDs, not a globally smallest ready-node sort. Identical input
@@ -11,3 +13,5 @@ Allowed failure does not silently satisfy a dependency.
 
 Plan size, direct dependencies, and graph depth are bounded. Split very large
 graphs into reviewed deployment phases instead of raising limits blindly.
+
+Continue with [API](api.md).

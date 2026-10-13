@@ -1,5 +1,7 @@
 # FAQ
 
+[Documentation index](README.md)
+
 ## Is this a migration engine?
 
 No. Schema history and execution belong to migrations.
@@ -35,3 +37,5 @@ behavior change needs a new version.
 
 Explicit construction keeps dependencies reviewable, testable, bounded, and
 free from package-level mutable state.
+
+Continue with [API](api.md).

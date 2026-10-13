@@ -1,5 +1,7 @@
 # Cookbook
 
+[Documentation index](README.md)
+
 ## One-time data backfill
 
 Define one operation with finite budgets and inject a repository into its
@@ -21,3 +23,5 @@ idempotency key derived from operation ID, version, and attempt semantics.
 
 Set `RequiresApproval` and inject an approver backed by the application's
 authenticated change-control system. Denials become blocked audit records.
+
+Continue with [API](api.md).

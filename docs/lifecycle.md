@@ -1,5 +1,7 @@
 # Operation lifecycle
 
+[Documentation index](README.md)
+
 Registration projects a new definition from pending to eligible. A replica
 claims eligible work and receives a monotonically increasing fencing token. An
 attempt with remaining execution budget is marked running immediately before
@@ -71,3 +73,5 @@ outcomes without exposing panic values.
 Transaction-manager contexts retain their values and own cancellation while
 also inheriting the attempt deadline and cancellation. A transaction callback
 offered after cancellation cannot start operation work.
+
+Continue with [API](api.md).

@@ -1,5 +1,7 @@
 # Migration integration
 
+[Documentation index](README.md)
+
 `postgres.Migrations()` exposes the sequencer ledger schema as an `fs.FS`.
 Applications apply it with migrations or their existing migration runner.
 The package never runs schema changes during import or construction.
@@ -82,3 +84,5 @@ ledger rewrite.
 The embedded ledger migrations are forward-only. Recovery from a bad schema
 change is a reviewed forward repair or restore; a generic down migration must
 not drop operation, attempt, or audit history.
+
+Continue with [API](api.md).

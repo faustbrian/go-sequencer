@@ -1,5 +1,7 @@
 # Deployment sequencing
 
+[Documentation index](README.md)
+
 Treat a deployment as explicit phases: apply prerequisite schema migrations,
 assert schema versions, inspect the operation plan, execute synchronous work,
 release application code, and dispatch asynchronous work where appropriate.

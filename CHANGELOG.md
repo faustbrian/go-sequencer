@@ -9,6 +9,12 @@
   adapter cleanup and replay obligations, forward-only migrations, and the
   single-segment administrative HTTP resource boundary.
 
+## 2.1.0 - 2026-10-22
+
+### Changed
+
+- Publish the current source and documentation with a fresh immutable tag.
+
 ## 2.0.2 - 2026-10-07
 
 ### Maintenance

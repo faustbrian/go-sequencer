@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   ci:
-    uses: faustbrian/go-library-tools/.github/workflows/library-ci.yml@09b43f49385650c44dd4151a12b0877ca6b48a88 # v2.5.1
+    uses: faustbrian/go-library-tools/.github/workflows/library-ci.yml@ef9ae418c61b6b92d8d93c03d71694031ec47ed8 # v2.5.2
     with:
       tooling_sha: 09b43f49385650c44dd4151a12b0877ca6b48a88
       source_bootstrap: false
